@@ -100,8 +100,16 @@ const TOOLS_CUSTOMER = [
   {
     type: 'function',
     function: {
-      name: 'konfirmasi_order',
-      description: 'Fix-kan draft order customer yang masih menunggu konfirmasi, hitung total, lalu kirim QR pembayaran. Dipakai kalau customer bilang "ya"/"fix"/"benar"/"udah bener" SETELAH sebelumnya ada draft pesanan yang ditanya konfirmasi (lihat histori chat).',
+      name: 'tampilkan_rincian_order',
+      description: 'Hitung & tampilkan rincian lengkap (item, harga satuan, subtotal) dari draft order customer, TANPA kirim QR. Dipakai kalau customer bilang "ya"/"fix"/"benar" pertama kali setelah draft dirangkum. Setelah ini, TUNGGU customer konfirmasi sekali lagi sebelum kirim QR.',
+      parameters: { type: 'object', properties: {}, required: [] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'kirim_qr_pembayaran',
+      description: 'Generate kode unik + kirim QR pembayaran. HANYA dipakai SETELAH tampilkan_rincian_order dipanggil DAN customer sudah mengonfirmasi SEKALI LAGI bahwa rincian itu benar (misal "iya kirim", "oke", "fix segera bayar"). JANGAN PERNAH dipanggil di putaran/giliran yang sama dengan tampilkan_rincian_order atau buat_order.',
       parameters: { type: 'object', properties: {}, required: [] },
     },
   },
@@ -383,7 +391,8 @@ CARA KERJA:
 - Tanya hal spesifik soal 1/beberapa menu (bahan, pedas, alergi, cocok buat siapa, dll) -> panggil tanya_detail_menu, lalu jawab dari deskripsi yang didapat dengan gaya ngobrol, bukan baca manual.
 - Sebut menu + jumlah mau dipesan -> panggil buat_order.
 - Kalau ada menu yang ambigu (banyak varian cocok) dari hasil buat_order, tampilkan pilihan dengan format angka, tunggu jawaban customer, lalu panggil jawab_klarifikasi_menu.
-- Customer konfirmasi pesanan ("ya", "fix", "udah bener") -> panggil konfirmasi_order.
+- Customer konfirmasi pesanan ("ya", "fix", "udah bener") SETELAH draft dirangkum -> panggil tampilkan_rincian_order (JANGAN langsung kirim QR).
+- Customer konfirmasi LAGI setelah lihat rincian ("ya kirim", "oke", "lanjut") -> baru panggil kirim_qr_pembayaran. WAJIB dua langkah terpisah, tidak boleh dipanggil dalam giliran yang sama, tunggu balasan customer di antaranya.
 - Customer sebut nomor meja / bilang sudah sampai kapan pun -> panggil konfirmasi_kedatangan.
 - Customer tanya status pesanan -> cek_status_order_saya.
 - Customer mau batal pesanan yang belum dikonfirmasi -> batalkan_order.
@@ -558,7 +567,22 @@ async function eksekusiTanyaDetailMenu({ nama_menu }) {
   };
 }
 
+const orderTerakhirPerCustomer = new Map(); // jid -> { teks, waktu }
+
 async function eksekusiBuatOrder({ teks_mentah }, konteks) {
+  // Dedupe: kalau teks_mentah PERSIS sama dengan panggilan terakhir dalam 10 detik,
+  // ini kemungkinan besar tool call ganda (model ngulang / retry pesan), bukan order baru.
+  const terakhir = orderTerakhirPerCustomer.get(konteks.jid);
+  const sekarang = Date.now();
+  if (terakhir && terakhir.teks === teks_mentah && sekarang - terakhir.waktu < 10000) {
+    return {
+      sukses: false,
+      pesan: 'Order ini sudah tercatat barusan, tidak diproses ulang.',
+      catatan_untuk_ai: 'Ini panggilan duplikat untuk pesanan yang sama persis, JANGAN ulangi lagi ke customer, cukup lanjut rangkum draft yang sudah ada kalau perlu.',
+    };
+  }
+  orderTerakhirPerCustomer.set(konteks.jid, { teks: teks_mentah, waktu: sekarang });
+
   const hasilParse = await ai.prosesOrderCustomer(teks_mentah);
 
   if (hasilParse.items.length === 0 && hasilParse.tidakDikenali.length === 0 && hasilParse.perluKlarifikasi.length === 0) {
@@ -653,19 +677,48 @@ async function eksekusiJawabKlarifikasiMenu({ teks_jawaban }, konteks) {
   };
 }
 
-async function eksekusiKonfirmasiOrder(_, konteks) {
+async function eksekusiTampilkanRincianOrder(_, konteks) {
   const draft = db.getDraftAtauMenungguBayarByCustomer(konteks.jid);
   if (!draft) {
     return { sukses: false, pesan: 'Tidak ada draft pesanan yang menunggu konfirmasi saat ini.' };
   }
+  if (draft.status === 'MENUNGGU_BAYAR') {
+    return {
+      sukses: false,
+      pesan: 'Pesanan ini sudah di tahap menunggu bayar (QR sudah/pernah dikirim).',
+      catatan_untuk_ai: 'Rincian sudah pernah ditampilkan sebelumnya untuk draft ini. Tanya apakah customer mau QR dikirim ulang.',
+    };
+  }
 
   const items = db.getItemsByPesananId(draft.id);
   const subtotal = items.reduce((sum, i) => sum + i.harga_satuan_snapshot * i.qty, 0);
+  db.setHargaFixPesanan(draft.id, subtotal);
+
+  return {
+    sukses: true,
+    pesanan_id: draft.id,
+    items: items.map((i) => `${i.nama_snapshot} x${i.qty}${i.catatan ? ` (${i.catatan})` : ''} @ Rp${i.harga_satuan_snapshot} = Rp${i.harga_satuan_snapshot * i.qty}`),
+    subtotal,
+    catatan_untuk_ai: 'Tampilkan rincian item (nama, qty, harga satuan, subtotal tiap item) dan total subtotal ke customer dengan format angka. Tanya apakah sudah fix dan boleh lanjut dikirimkan QR pembayarannya. JANGAN panggil kirim_qr_pembayaran sekarang, tunggu jawaban customer berikutnya.',
+  };
+}
+
+async function eksekusiKirimQrPembayaran(_, konteks) {
+  const draft = db.getDraftAtauMenungguBayarByCustomer(konteks.jid);
+  if (!draft) {
+    return { sukses: false, pesan: 'Tidak ada draft pesanan yang menunggu konfirmasi saat ini.' };
+  }
+  if (!draft.subtotal) {
+    return {
+      sukses: false,
+      pesan: 'Rincian order belum ditampilkan ke customer.',
+      catatan_untuk_ai: 'Panggil tampilkan_rincian_order dulu sebelum kirim QR.',
+    };
+  }
 
   const kodeUnik = db.getNextKodeUnikHarian();
-  const nominalTransfer = subtotal + kodeUnik;
+  const nominalTransfer = draft.subtotal + kodeUnik;
 
-  db.setHargaFixPesanan(draft.id, subtotal);
   db.setKodeUnikDanNominal(draft.id, kodeUnik, nominalTransfer);
   db.setStatusPesanan(draft.id, 'MENUNGGU_BAYAR');
 
@@ -675,14 +728,11 @@ async function eksekusiKonfirmasiOrder(_, konteks) {
   return {
     sukses: true,
     pesanan_id: draft.id,
-    total: subtotal,
     nominal_transfer: nominalTransfer,
     nomor_meja: customer.nomor_meja || null,
     qr_terkirim: qrTerkirim,
     catatan_untuk_ai: qrTerkirim
-      ? (customer.nomor_meja
-          ? undefined
-          : 'Ingatkan customer kalau belum kasih tau nomor mejanya, minta disebutkan juga supaya pesanan bisa diantar.')
+      ? (customer.nomor_meja ? undefined : 'Ingatkan customer kalau belum kasih tau nomor mejanya.')
       : 'PENTING: QR GAGAL terkirim. Beri tahu customer dengan natural bahwa ada kendala, minta mereka hubungi kasir langsung.',
   };
 }
@@ -768,7 +818,8 @@ const EKSEKUTOR_CUSTOMER = {
   tanya_detail_menu: eksekusiTanyaDetailMenu,
   buat_order: eksekusiBuatOrder,
   jawab_klarifikasi_menu: eksekusiJawabKlarifikasiMenu,
-  konfirmasi_order: eksekusiKonfirmasiOrder,
+  tampilkan_rincian_order: eksekusiTampilkanRincianOrder,
+  kirim_qr_pembayaran: eksekusiKirimQrPembayaran,
   batalkan_order: eksekusiBatalkanOrder,
   cek_status_order_saya: eksekusiCekStatusOrderSaya,
   konfirmasi_kedatangan: eksekusiKonfirmasiKedatangan,
