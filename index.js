@@ -128,6 +128,7 @@ function buatKonteksUntukAgent(jid) {
     jid,
     kirimPesan,
     kirimQrKeCustomer,
+    kirimFotoMenu,
   };
 }
 

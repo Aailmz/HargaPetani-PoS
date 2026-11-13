@@ -501,6 +501,9 @@ const AMBANG_RINGKAS = 10;
 async function eksekusiLihatMenu({ kategori }) {
   const semuaMenu = db.getMenuTersedia();
 
+  // kirim file menu fisik tiap kali tool ini dipanggil
+  await konteks.kirimFotoMenu(konteks.jid);
+
   if (kategori) {
     const terfilter = semuaMenu.filter((m) => (m.kategori || 'lainnya').toLowerCase() === kategori.toLowerCase());
     if (terfilter.length === 0) {
