@@ -626,7 +626,7 @@ async function eksekusiBuatOrder({ teks_mentah }, konteks) {
       ? 'PENTING: pesanan ini sebelumnya sudah dikirimi QR (sedang menunggu bayar), tapi karena ada tambahan item, nominal berubah dan QR lama TIDAK BERLAKU LAGI. Beri tahu customer dengan jelas (jangan sampai dia bayar pakai QR/nominal lama), rangkum SEMUA item di draft saat ini, dan minta konfirmasi ulang ("ya"/"fix") supaya QR baru dengan nominal yang benar dikirim.'
       : 'Pesanan tercatat sebagai draft. Rangkum SEMUA item di draft saat ini (bukan cuma yang baru ditambahkan), tanya apakah sudah fix semua atau mau nambah lagi, minta bilang "ya"/"fix" untuk lanjut ke pembayaran. JANGAN sebutkan total harga dulu di sini (dihitung final pas konfirmasi).',
   };
-}gapa
+}
 
 async function eksekusiJawabKlarifikasiMenu({ teks_jawaban }, konteks) {
   const pending = getKlarifikasiPending(konteks.jid);
