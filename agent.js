@@ -498,10 +498,9 @@ async function jalankanAgent({ systemPrompt, tools, historiChat, pesanBaru, ekse
 
 const AMBANG_RINGKAS = 10;
 
-async function eksekusiLihatMenu({ kategori }) {
+async function eksekusiLihatMenu({ kategori }, konteks) {
   const semuaMenu = db.getMenuTersedia();
 
-  // kirim file menu fisik tiap kali tool ini dipanggil
   await konteks.kirimFotoMenu(konteks.jid);
 
   if (kategori) {
