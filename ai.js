@@ -157,55 +157,78 @@ Balas JSON array, tiap elemen: {"namaInputAsli": "...", "namaMenuTerpilih": "...
   }).filter(Boolean);
 }
 
-/**
- * Fungsi utama: proses 1 pesan list menu penuh dari kasir.
- */
-async function prosesListMenuOperator(pesanMentah) {
-  const itemMentah = await ekstrakListMenuMentah(pesanMentah);
+async function cocokkanJawabanPilihan(jawabanCustomer, daftarPending) {
+  const konteksPending = daftarPending.map((p, idx) => {
+    if (p.jenisPilihan === 'varian') {
+      return `${idx + 1}. Untuk "${p.namaInput}" (qty: ${p.qty}), pilih porsi: ${p.opsiTersedia.join(', ')}`;
+    }
+    return `${idx + 1}. Untuk "${p.namaInput}" (qty: ${p.qty}), pilih ${p.namaOpsi}: ${p.opsiTersedia.join(', ')}`;
+  }).join('\n');
 
-  const ringkasan = {
-    diupdate: [],
-    baru: [],
-    habis: [],
-    totalDiproses: itemMentah.length,
-  };
+  const systemJson = `Kamu mencocokkan jawaban customer ke pilihan yang sudah ditawarkan (porsi/suhu/sambal/dll). Jawab HANYA JSON array, tanpa markdown fence.`;
+
+  const userPrompt = `Sebelumnya customer ditanya mau pilih yang mana:
+${konteksPending}
+
+Customer menjawab: "${jawabanCustomer}"
+
+Cocokkan jawaban ini ke pilihan spesifik untuk TIAP pertanyaan di atas (kalau cuma cover sebagian, tidak masalah, balas yang berhasil dicocokkan aja).
+
+Balas JSON array, tiap elemen: {"namaInputAsli": "...", "opsiTerpilih": "..."}
+"opsiTerpilih" harus PERSIS sama dengan salah satu opsi yang ditawarkan untuk pertanyaan itu.`;
+
+  const hasil = await callAiJson(systemJson, userPrompt, 500);
+  if (!hasil || !Array.isArray(hasil)) return [];
+
+  return hasil.map((h) => {
+    const pending = daftarPending.find((p) => p.namaInput === h.namaInputAsli);
+    if (!pending) return null;
+    const opsiValid = pending.opsiTersedia.find((o) => o === h.opsiTerpilih);
+    return opsiValid ? { pending, opsiTerpilih: opsiValid } : null;
+  }).filter(Boolean);
+}
+
+/**
+ * Parse teks kasir soal status menu (HABIS/ADA) jadi daftar perubahan status.
+ */
+async function ekstrakStatusMenuMentah(pesanMentah) {
+  const systemJson = `Kamu adalah parser teks status stok menu resto dari kasir. Jawab HANYA dengan JSON valid array, tanpa markdown fence.`;
+
+  const userPrompt = `Kasir menulis pesan ini soal status menu:
+
+"""
+${pesanMentah}
+"""
+
+Untuk SETIAP menu yang disebut, tentukan apakah kasir bilang menu itu HABIS (tidak tersedia) atau ADA/READY lagi (tersedia). Pola umum: "HABIS <menu>", "<menu> habis/kosong", "ADA <menu>", "<menu> ready/udah ada lagi".
+
+Balas JSON array, format tiap elemen:
+{"nama": "...", "tersedia": true/false}`;
+
+  const hasil = await callAiJson(systemJson, userPrompt, 800);
+  if (!hasil || !Array.isArray(hasil)) return [];
+  return hasil;
+}
+
+async function prosesUpdateStatusMenu(pesanMentah) {
+  const itemMentah = await ekstrakStatusMenuMentah(pesanMentah);
+
+  const hasil = { perubahan: [], tidakDikenali: [] };
 
   for (const item of itemMentah) {
     if (!item.nama) continue;
 
-    const matchResult = cariKandidatMenu(item.nama);
-    let namaFinal = item.nama;
-
-    if (matchResult.statusMatch === 'YAKIN') {
-      namaFinal = matchResult.kandidatTerbaik.nama;
-    } else if (matchResult.statusMatch === 'AMBIGU') {
-      const keputusan = await putuskanMenuAmbigu(item.nama, matchResult.kandidatTerbaik, matchResult.kandidatKedua);
-      if (keputusan !== 'BARU') {
-        namaFinal = keputusan;
-      }
+    const match = cariKandidatMenu(item.nama);
+    if (match.statusMatch === 'TIDAK_ADA' || match.statusMatch === 'AMBIGU_MULTI') {
+      hasil.tidakDikenali.push(item.nama);
+      continue;
     }
 
-    const menuSebelumnya = cariKandidatMenu(namaFinal).kandidatTerbaik;
-    const statusBaru = item.habis ? 'habis' : 'tersedia';
-
-    upsertMenu({
-      nama: namaFinal,
-      kategori: item.kategori,
-      deskripsi: item.deskripsi,
-      harga: item.habis ? (menuSebelumnya?.harga ?? null) : item.harga,
-      status: statusBaru,
-    });
-
-    if (item.habis) {
-      ringkasan.habis.push(namaFinal);
-    } else if (!menuSebelumnya || matchResult.statusMatch === 'TIDAK_ADA') {
-      ringkasan.baru.push(namaFinal);
-    } else {
-      ringkasan.diupdate.push(namaFinal);
-    }
+    const menu = match.kandidatTerbaik;
+    hasil.perubahan.push({ menu, tersedia: !!item.tersedia });
   }
 
-  return ringkasan;
+  return hasil;
 }
 
 /**
@@ -218,16 +241,22 @@ async function ekstrakOrderCustomer(pesanCustomer) {
 
 "${pesanCustomer}"
 
-Ekstrak semua menu yang disebutkan beserta jumlahnya. Kalau tidak disebutkan jumlah, asumsikan 1. Kalau ada catatan khusus per item (misal "pedesnya dikit", "tanpa bawang", "less sugar"), catat di field "catatan".
+Ekstrak semua menu yang disebutkan beserta jumlahnya. Kalau tidak disebutkan jumlah, asumsikan 1.
 
-Abaikan kata-kata basa-basi seperti "dong", "ya", "mau pesan", dll -- fokus cuma nama menu + jumlah + catatan.
+Selain itu, deteksi juga indikasi berikut KALAU disebutkan eksplisit oleh pelanggan (jangan menebak-nebak kalau tidak disebut):
+- "porsi": kalau pelanggan sebut "setengah porsi"/"1/2 porsi"/"porsi kecil" -> "setengah". Kalau sebut "porsi penuh"/"porsi besar"/"porsi normal" -> "penuh". Kalau tidak disebut sama sekali -> null.
+- "suhu": kalau pelanggan sebut "panas"/"hangat" -> "panas". Kalau sebut "dingin"/"es"/"ice" -> "dingin". Kalau tidak disebut -> null.
+- "sambal": kalau pelanggan sebut "tanpa sambal"/"gak pake sambal"/"no sambal" -> "tanpa". Kalau sebut "pakai sambal"/"dengan sambal" -> "dengan". Kalau tidak disebut -> null.
+- "catatan": catatan bebas lain di luar 3 hal di atas (misal "pedesnya dikit", "tanpa bawang", "less sugar"). Kalau tidak ada -> null.
+
+Abaikan kata-kata basa-basi seperti "dong", "ya", "mau pesan", dll -- fokus cuma nama menu + jumlah + indikasi di atas.
 
 Kalau pesan ini sama sekali TIDAK berisi order menu (misal cuma chat biasa/pertanyaan/sapaan), balas array kosong [].
 
 Balas JSON array, format tiap elemen:
-{"nama": "...", "qty": angka, "catatan": "..." atau null}`;
+{"nama": "...", "qty": angka, "porsi": "setengah"/"penuh"/null, "suhu": "panas"/"dingin"/null, "sambal": "dengan"/"tanpa"/null, "catatan": "..." atau null}`;
 
-  const hasil = await callAiJson(systemJson, userPrompt, 1000);
+  const hasil = await callAiJson(systemJson, userPrompt, 1200);
   if (!hasil || !Array.isArray(hasil)) return [];
   return hasil;
 }
@@ -239,47 +268,140 @@ Balas JSON array, format tiap elemen:
 async function prosesOrderCustomer(pesanCustomer) {
   const itemMentah = await ekstrakOrderCustomer(pesanCustomer);
 
-  const hasil = { items: [], tidakDikenali: [], perluKlarifikasi: [] };
+  const hasil = { items: [], tidakDikenali: [], perluKlarifikasi: [], perluPilihan: [] };
 
   for (const item of itemMentah) {
     if (!item.nama) continue;
 
     const matchResult = cariKandidatMenu(item.nama);
 
-    if (matchResult.statusMatch === 'YAKIN') {
-      hasil.items.push({
-        menu: matchResult.kandidatTerbaik,
-        namaInput: item.nama,
-        qty: item.qty || 1,
-        catatan: item.catatan || null,
-      });
-    } else if (matchResult.statusMatch === 'AMBIGU_MULTI') {
+    if (matchResult.statusMatch === 'AMBIGU_MULTI') {
       hasil.perluKlarifikasi.push({
         namaInput: item.nama,
         qty: item.qty || 1,
         catatan: item.catatan || null,
         kandidatList: matchResult.kandidatList,
       });
+      continue;
+    }
+
+    let menuFinal = null;
+
+    if (matchResult.statusMatch === 'YAKIN') {
+      menuFinal = matchResult.kandidatTerbaik;
     } else if (matchResult.statusMatch === 'AMBIGU') {
       const keputusan = await putuskanMenuAmbigu(item.nama, matchResult.kandidatTerbaik, matchResult.kandidatKedua);
       if (keputusan !== 'BARU') {
-        const menuFinal = [matchResult.kandidatTerbaik, matchResult.kandidatKedua]
-          .find((m) => m && m.nama === keputusan);
-        hasil.items.push({
-          menu: menuFinal || matchResult.kandidatTerbaik,
-          namaInput: item.nama,
-          qty: item.qty || 1,
-          catatan: item.catatan || null,
-        });
-      } else {
-        hasil.tidakDikenali.push(item.nama);
+        menuFinal = [matchResult.kandidatTerbaik, matchResult.kandidatKedua]
+          .find((m) => m && m.nama === keputusan) || matchResult.kandidatTerbaik;
       }
-    } else {
-      hasil.tidakDikenali.push(item.nama);
     }
+
+    if (!menuFinal) {
+      hasil.tidakDikenali.push(item.nama);
+      continue;
+    }
+
+    // ---------- RESOLVE VARIAN ----------
+    const resolusiVarian = resolveVarian(menuFinal, item.porsi);
+    if (resolusiVarian.butuhKlarifikasi) {
+      hasil.perluPilihan.push({
+        menu: menuFinal,
+        namaInput: item.nama,
+        qty: item.qty || 1,
+        jenisPilihan: 'varian',
+        opsiTersedia: resolusiVarian.opsiTersedia, // label-label varian, misal ["1 porsi", "1/2 porsi"]
+        catatan: item.catatan || null,
+        parsial: { suhu: item.suhu, sambal: item.sambal }, // dibawa supaya tidak hilang pas user jawab
+      });
+      continue;
+    }
+    const varianTerpilih = resolusiVarian.varian;
+
+    // ---------- CEK PILIHAN WAJIB (Suhu, dll) ----------
+    const pilihanTerisi = {};
+    let adaPilihanWajibKosong = false;
+    let pilihanWajibKosong = null;
+
+    for (const p of menuFinal.pilihan || []) {
+      const nilaiDariInput = cocokkanNilaiPilihan(p, { suhu: item.suhu, sambal: item.sambal });
+      if (nilaiDariInput) {
+        pilihanTerisi[p.nama] = nilaiDariInput;
+      } else if (p.wajib) {
+        adaPilihanWajibKosong = true;
+        pilihanWajibKosong = p;
+        break;
+      } else if (p.default_opsi) {
+        pilihanTerisi[p.nama] = p.default_opsi; // pakai default kalau tidak wajib & tidak disebut
+      }
+    }
+
+    if (adaPilihanWajibKosong) {
+      hasil.perluPilihan.push({
+        menu: menuFinal,
+        namaInput: item.nama,
+        qty: item.qty || 1,
+        jenisPilihan: 'opsi',
+        namaOpsi: pilihanWajibKosong.nama, // misal "Suhu"
+        opsiTersedia: pilihanWajibKosong.opsi, // sudah array
+        varianSku: varianTerpilih.sku,
+        pilihanSudahTerisi: pilihanTerisi,
+        catatan: item.catatan || null,
+      });
+      continue;
+    }
+
+    hasil.items.push({
+      menu: menuFinal,
+      varian: varianTerpilih,
+      pilihanTerisi,
+      namaInput: item.nama,
+      qty: item.qty || 1,
+      catatan: item.catatan || null,
+    });
   }
 
   return hasil;
+}
+
+// ---------- HELPER: resolve varian dari menu + indikasi porsi ----------
+function resolveVarian(menu, indikasiPorsi) {
+  const daftarVarian = menu.varian || [];
+
+  if (daftarVarian.length === 1) {
+    return { varian: daftarVarian[0] };
+  }
+
+  // Lebih dari 1 varian (misal Sate Ayam: penuh/setengah)
+  if (indikasiPorsi === 'setengah') {
+    const v = daftarVarian.find((v) => /setengah|1\/2/i.test(v.label));
+    if (v) return { varian: v };
+  }
+  if (indikasiPorsi === 'penuh') {
+    const v = daftarVarian.find((v) => !/setengah|1\/2/i.test(v.label));
+    if (v) return { varian: v };
+  }
+
+  // Tidak ada indikasi jelas -> minta klarifikasi ke customer
+  return {
+    butuhKlarifikasi: true,
+    opsiTersedia: daftarVarian.map((v) => v.label),
+  };
+}
+
+// ---------- HELPER: cocokkan nilai pilihan (Suhu/Sambal) dari hasil ekstraksi AI ----------
+function cocokkanNilaiPilihan(pilihan, indikasi) {
+  const namaLower = pilihan.nama.toLowerCase();
+  const opsiList = pilihan.opsi; // SUDAH array dari db.js, tidak perlu JSON.parse lagi
+
+  if (namaLower === 'suhu' && indikasi.suhu) {
+    return opsiList.find((o) => o.toLowerCase().includes(indikasi.suhu)) || null;
+  }
+  if (namaLower === 'sambal' && indikasi.sambal) {
+    const cari = indikasi.sambal === 'tanpa' ? 'tanpa' : 'dengan';
+    return opsiList.find((o) => o.toLowerCase().includes(cari)) || null;
+  }
+  return null;
 }
 
 /**
@@ -298,26 +420,17 @@ Balas HANYA dengan isi pesannya saja, tanpa tanda kutip.`;
 }
 
 /**
- * Dipanggil setelah kasir update_menu & konfirmasi broadcast (kalau mau dipakai alurnya).
- */
-async function generateRingkasanUpdateMenu(ringkasan) {
-  const prompt = `Barusan selesai update data menu dari list yang dikirim kasir. Hasilnya:
-- Total ${ringkasan.totalDiproses} item diproses
-- Menu baru ditambahkan: ${ringkasan.baru.length > 0 ? ringkasan.baru.join(', ') : 'tidak ada'}
-- Menu yang diupdate: ${ringkasan.diupdate.length} item
-- Menu habis/tidak tersedia: ${ringkasan.habis.length > 0 ? ringkasan.habis.join(', ') : 'tidak ada'}
-
-Buatkan SATU pesan singkat (maksimal 2 kalimat) ke KASIR yang merangkum hasil ini dengan jelas. Ini pesan ke rekan kerja, boleh langsung/teknis, tidak perlu gaya persuasif jualan.
-Balas HANYA dengan isi pesannya saja, tanpa tanda kutip.`;
-
-  return await callAiText(prompt, 400);
-}
-
-/**
  * Dipanggil kasir minta broadcast promo.
  */
 async function generateBroadcastPromo(menuMenarik) {
-  const daftarMenu = menuMenarik.map((m) => `${m.nama}: Rp${m.harga}`).join(', ');
+  const daftarMenu = menuMenarik
+    .map((m) => {
+      const hargaTampil = m.varian && m.varian.length === 1
+        ? `Rp${m.varian[0].harga}`
+        : (m.varian ? m.varian.map((v) => `${v.label} Rp${v.harga}`).join('/') : `mulai Rp${m.harga_mulai ?? '-'}`);
+      return `${m.nama} (${hargaTampil})`;
+    })
+    .join(', ');
 
   const prompt = `Hari ini ada menu rekomendasi berikut: ${daftarMenu}
 
@@ -329,7 +442,11 @@ Balas HANYA dengan isi pesannya saja, tanpa tanda kutip.`;
 
 async function generatePesanTotalDanQr(namaCustomer, items, subtotal, nominalTransfer, nomorMeja) {
   const daftarItem = items
-    .map((i) => `${i.nama_snapshot} x${i.qty}${i.catatan ? ` (${i.catatan})` : ''} @ Rp${i.harga_satuan_snapshot} = Rp${i.harga_satuan_snapshot * i.qty}`)
+    .map((i) => {
+      const pilihan = i.pilihan_terpilih ? JSON.parse(i.pilihan_terpilih) : null;
+      const infoPilihan = pilihan ? ` [${Object.entries(pilihan).map(([k, v]) => `${k}: ${v}`).join(', ')}]` : '';
+      return `${i.nama_snapshot}${infoPilihan} x${i.qty}${i.catatan ? ` (${i.catatan})` : ''} @ Rp${i.harga_satuan_snapshot} = Rp${i.harga_satuan_snapshot * i.qty}`;
+    })
     .join('\n');
 
   const infoMeja = nomorMeja ? `Meja: ${nomorMeja}` : 'Nomor meja belum diinfokan -- mohon sebutkan juga ya Mas/Mbak.';
@@ -355,11 +472,12 @@ Balas HANYA dengan isi pesannya saja, tanpa tanda kutip.`;
 module.exports = {
   callAiText,
   callAiJson,
-  prosesListMenuOperator,
-  generateRingkasanUpdateMenu,
+  prosesUpdateStatusMenu,
   prosesOrderCustomer,
   cocokkanJawabanKlarifikasiMenu,
+  cocokkanJawabanPilihan,
   generateKonfirmasiOrderMasukDapur,
   generateBroadcastPromo,
   generatePesanTotalDanQr,
+  resolveVarian,
 };

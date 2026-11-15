@@ -65,7 +65,12 @@ function cariKandidatMenu(namaInput) {
   }
 
   const skorSemua = semuaMenu
-    .map((m) => ({ menu: m, skor: hitungSkorGabungan(namaInput, m.nama) }))
+    .map((m) => {
+      // Skor terbaik di antara nama resmi DAN semua alias-nya
+      const kandidatNama = [m.nama, ...(m.alias || [])];
+      const skorTerbaikNama = Math.max(...kandidatNama.map((n) => hitungSkorGabungan(namaInput, n)));
+      return { menu: m, skor: skorTerbaikNama };
+    })
     .sort((a, b) => b.skor - a.skor);
 
   const terbaik = skorSemua[0];

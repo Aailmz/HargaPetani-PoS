@@ -15,12 +15,51 @@ const agent = require('./agent');
 
 let sock;
 
+const TIMEOUT_KEPUTUSAN_HABIS_MS = 10 * 60 * 1000; // 10 menit
+
+async function cekTimeoutKeputusanHabis() {
+  if (!sock?.user) return; // WA belum/tidak terkoneksi
+  const itemPending = db.getItemMenungguKeputusanHabis();
+  const sekarang = Date.now();
+
+  for (const item of itemPending) {
+    const waktuLapor = new Date(item.habis_dilaporkan_at).getTime();
+    if (sekarang - waktuLapor < TIMEOUT_KEPUTUSAN_HABIS_MS) continue;
+
+    // Timeout: auto-batal + refund
+    db.setStatusItemPesanan(item.id, 'DIBATALKAN_HABIS');
+    db.hitungUlangSubtotalAktif(item.pesanan_id);
+    const nominal = item.harga_satuan_snapshot * item.qty;
+    db.catatRefund({
+      pesanan_id: item.pesanan_id,
+      pesanan_item_id: item.id,
+      nominal,
+      alasan: `${item.nama_snapshot} habis, customer tidak respon dalam 10 menit, auto-dibatalkan`,
+    });
+
+    const customer = db.getCustomer(item.customer_jid);
+    await kirimPesan(
+      item.customer_jid,
+      `Karena belum ada balasan, ${item.nama_snapshot} kami batalkan otomatis nggih Mas/Mbak, dan uangnya (Rp${nominal}) akan kami kembalikan. Mohon maaf atas ketidaknyamanannya 🙏`
+    );
+
+    const operatorUtama = db.getAllOperators().find((o) => o.is_utama === 1);
+    if (operatorUtama) {
+      await kirimPesan(
+        operatorUtama.jid,
+        `⏱️ AUTO-BATAL (timeout 10 menit) -- Pesanan #${item.pesanan_id} (meja ${item.nomor_meja || '-'}, ${customer.nama || 'customer'})\nItem: ${item.nama_snapshot}\nRefund: Rp${nominal}\n\nMohon proses pengembalian uangnya nggih.`
+      );
+    }
+
+    console.log(`⏱️  Auto-batal item #${item.id} (${item.nama_snapshot}) karena timeout.`);
+  }
+}
+
 async function startBot() {
   const { state, saveCreds } = await useMultiFileAuthState('auth_session');
 
   sock = makeWASocket({
     auth: state,
-    printQRInTerminal: true,
   });
 
   sock.ev.on('creds.update', saveCreds);
@@ -37,7 +76,7 @@ async function startBot() {
       const shouldReconnect =
         lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
       console.log('Koneksi terputus. Reconnect:', shouldReconnect);
-      if (shouldReconnect) startBot();
+      if (shouldReconnect) setTimeout(startBot, 3000);
     } else if (connection === 'open') {
       console.log('\n✅ The Banjoemas terkoneksi ke WhatsApp!\n');
       console.log('Bot siap menerima pesan.\n');
@@ -45,8 +84,10 @@ async function startBot() {
   });
 
   sock.ev.on('messages.upsert', async (m) => {
+    if (m.type !== 'notify') return; // abaikan sinkronisasi histori
+
     const message = m.messages[0];
-    if (!message.message || message.key.fromMe) return;
+    if (!message?.message || message.key.fromMe) return;
 
     const remoteJidMentah = message.key.remoteJid;
     if (remoteJidMentah && remoteJidMentah.endsWith('@g.us')) {
@@ -55,15 +96,37 @@ async function startBot() {
     }
 
     const sender = normalizeJid(message);
+
+    // Buka pembungkus (mode pesan sementara / view once)
+    const isi = message.message.ephemeralMessage?.message
+      || message.message.viewOnceMessage?.message
+      || message.message;
+
     const text = (
-      message.message.conversation ||
-      message.message.extendedTextMessage?.text ||
+      isi.conversation ||
+      isi.extendedTextMessage?.text ||
+      isi.imageMessage?.caption ||
+      isi.videoMessage?.caption ||
+      isi.documentMessage?.caption ||
       ''
     ).trim();
 
-    console.log(`\n📩 Pesan masuk dari ${sender}: "${text}"`);
+    try {
+      if (!text) {
+        const media = deteksiJenisMedia(isi);
+        if (media) {
+          console.log(`\n📎 ${media} masuk dari ${sender}`);
+          await handlePesanNonTeks(sender, media);
+        }
+        // reaksi, protokol, dll: diabaikan diam-diam
+        return;
+      }
 
-    await handleIncomingMessage(sender, text);
+      console.log(`\n📩 Pesan masuk dari ${sender}: "${text}"`);
+      await handleIncomingMessage(sender, text);
+    } catch (err) {
+      console.error('❌ Error memproses pesan:', err.message);
+    }
   });
 
   return sock;
@@ -87,40 +150,64 @@ async function kirimPesan(jid, text, jedaMsSebelum = 0) {
   return sock.sendMessage(jid, { text });
 }
 
-async function kirimFotoMenu(jid) {
-  const folderMenu = path.join(__dirname, 'images', 'menu-pdf');
-  if (!fs.existsSync(folderMenu)) {
-    console.log('⚠️  Folder images/menu-pdf tidak ditemukan.');
+const DATA_MENU_DIR = path.join(__dirname, 'data_menu');
+
+// Kirim satu file gambar by path absolut, aman kalau file tidak ada.
+async function kirimGambarJikaAda(jid, filePathAbsolut, caption) {
+  if (!filePathAbsolut || !fs.existsSync(filePathAbsolut)) {
     return false;
   }
-
-  const fileList = fs.readdirSync(folderMenu).filter((f) => /\.(jpg|jpeg|png|pdf)$/i.test(f));
-  if (fileList.length === 0) {
-    console.log('⚠️  Tidak ada file menu (jpg/png/pdf) di images/menu-pdf.');
-    return false;
-  }
-
   try {
-    for (const fileName of fileList.sort()) {
-      const filePath = path.join(folderMenu, fileName);
-      const isPdf = fileName.toLowerCase().endsWith('.pdf');
-
-      if (isPdf) {
-        await sock.sendMessage(jid, {
-          document: fs.readFileSync(filePath),
-          mimetype: 'application/pdf',
-          fileName: 'Menu The Banjoemas.pdf',
-        });
-      } else {
-        await sock.sendMessage(jid, { image: fs.readFileSync(filePath) });
-      }
-      await tunggu(400); // jeda kecil antar file biar urutannya rapi di WA
-    }
+    await sock.sendMessage(jid, { image: fs.readFileSync(filePathAbsolut), caption: caption || undefined });
     return true;
   } catch (err) {
-    console.error('❌ Gagal kirim file menu:', err.message);
+    console.error('❌ Gagal kirim gambar:', err.message);
     return false;
   }
+}
+
+// Kirim kartu 1 menu spesifik (dipakai saat tanya_detail_menu).
+// Fallback: kartu menu -> foto polos menu -> foto kategori -> (tidak ada apa-apa, teks saja).
+async function kirimKartuMenu(jid, menu) {
+  if (menu.kartu_path) {
+    const ok = await kirimGambarJikaAda(jid, path.join(DATA_MENU_DIR, menu.kartu_path));
+    if (ok) return 'kartu';
+  }
+  if (menu.foto_path) {
+    const ok = await kirimGambarJikaAda(jid, path.join(DATA_MENU_DIR, menu.foto_path));
+    if (ok) return 'foto';
+  }
+  return 'tidak_ada';
+}
+
+// Kirim kartu 1 kategori (dipakai saat lihat_menu dengan kategori spesifik).
+async function kirimKartuKategori(jid, kategori) {
+  if (kategori.kartu_path) {
+    const ok = await kirimGambarJikaAda(jid, path.join(DATA_MENU_DIR, kategori.kartu_path));
+    if (ok) return 'kartu';
+  }
+  if (kategori.foto_path) {
+    const caption = kategori.foto_ilustrasi ? '(foto ilustrasi)' : undefined;
+    const ok = await kirimGambarJikaAda(jid, path.join(DATA_MENU_DIR, kategori.foto_path), caption);
+    if (ok) return 'foto';
+  }
+  return 'tidak_ada';
+}
+
+// Kirim semua kartu kategori sekaligus (dipakai saat sambutan customer baru / minta lihat semua menu).
+async function kirimSemuaKartuKategori(jid) {
+  const semuaKategori = db.getAllKategori();
+  if (semuaKategori.length === 0) {
+    console.log('⚠️  Tidak ada kategori di database, jalankan seed.js dulu.');
+    return false;
+  }
+  let adaYangTerkirim = false;
+  for (const kat of semuaKategori) {
+    const hasil = await kirimKartuKategori(jid, kat);
+    if (hasil !== 'tidak_ada') adaYangTerkirim = true;
+    await tunggu(400); // jeda kecil antar file biar urutannya rapi di WA
+  }
+  return adaYangTerkirim;
 }
 
 function buatKonteksUntukAgent(jid) {
@@ -128,8 +215,57 @@ function buatKonteksUntukAgent(jid) {
     jid,
     kirimPesan,
     kirimQrKeCustomer,
-    kirimFotoMenu,
+    kirimKartuMenu,
+    kirimKartuKategori,
+    kirimSemuaKartuKategori,
+    kirimQrKekuranganKeCustomer,
   };
+}
+
+function deteksiJenisMedia(isi) {
+  if (isi.imageMessage) return 'gambar';
+  if (isi.audioMessage) return 'voice note';
+  if (isi.videoMessage) return 'video';
+  if (isi.documentMessage) return 'dokumen';
+  if (isi.stickerMessage) return 'stiker';
+  return null;
+}
+
+async function handlePesanNonTeks(jid, jenisMedia) {
+  if (db.isOperator(jid)) return;
+
+  if (!db.isCustomerRegistered(jid)) await prosesSambutanCustomerBaru(jid);
+  if (jenisMedia === 'stiker') return;
+
+  const catatanUser = `[customer mengirim ${jenisMedia}]`;
+
+  if (db.getStatusCs(jid) === 'ESKALASI') {
+    db.simpanChatHistory(jid, 'user', catatanUser);
+    return;
+  }
+
+  const pesanan = db.getDraftAtauMenungguBayarByCustomer(jid);
+  const customer = db.getCustomer(jid);
+  let balasan;
+
+  if (pesanan && pesanan.status === 'MENUNGGU_BAYAR') {
+    // Kemungkinan bukti transfer: teruskan info ke kasir (kasir yang memastikan di EDC/mutasi)
+    const operatorUtama = db.getAllOperators().find((o) => o.is_utama === 1);
+    if (operatorUtama) {
+      const infoMeja = customer.nomor_meja ? ` (meja ${customer.nomor_meja})` : '';
+      await kirimPesan(
+        operatorUtama.jid,
+        `ℹ️ ${customer.nama || jid.split('@')[0]}${infoMeja} mengirim ${jenisMedia}, kemungkinan bukti transfer untuk pesanan #${pesanan.id}. Mohon dicek manual nggih.`
+      );
+    }
+    balasan = 'Matur nuwun Mas/Mbak, kami teruskan ke kasir untuk dicek nggih. Pesanan langsung diproses begitu pembayaran terkonfirmasi 🙏';
+  } else {
+    balasan = 'Mohon maaf nggih Mas/Mbak, saat ini kami baru bisa membaca pesan teks. Boleh ditulis saja pesannya?';
+  }
+
+  await kirimPesan(jid, balasan);
+  db.simpanChatHistory(jid, 'user', catatanUser);
+  db.simpanChatHistory(jid, 'assistant', balasan);
 }
 
 async function handleIncomingMessage(jid, text) {
@@ -151,6 +287,12 @@ async function handleCustomerMessage(jid, text) {
   await routeCustomerTerdaftar(jid, text);
 }
 
+async function kirimInfoMenuHabis(jid) {
+  const habis = db.getAllMenu().filter((m) => !m.tersedia).map((m) => m.nama);
+  if (habis.length === 0) return;
+  await kirimPesan(jid, `Info hari ini, menu yang sedang habis: ${habis.join(', ')}.`);
+}
+
 async function prosesSambutanCustomerBaru(jid) {
   db.registerCustomer(jid);
 
@@ -164,7 +306,8 @@ async function prosesSambutanCustomerBaru(jid) {
     sambutan || 'Sugeng rawuh Mas/Mbak di The Banjoemas Resto & Cafe 🙏 Monggo dilihat dulu menunya nggih, kami kirimkan sekarang.'
   );
 
-  await kirimFotoMenu(jid);
+  await kirimSemuaKartuKategori(jid);
+  await kirimInfoMenuHabis(jid);
 
   console.log(`✅ Sambutan + menu terkirim ke customer baru: ${jid}`);
 }
@@ -180,7 +323,7 @@ async function routeCustomerTerdaftar(jid, text) {
   const konteks = buatKonteksUntukAgent(jid);
 
   const hasil = await agent.jalankanAgent({
-    systemPrompt: agent.SYSTEM_PROMPT_CUSTOMER,
+    systemPrompt: agent.SYSTEM_PROMPT_CUSTOMER + agent.buatBlokInfoResto() + agent.buatKonteksDinamisCustomer(jid),
     tools: agent.TOOLS_CUSTOMER,
     historiChat,
     pesanBaru: text,
@@ -266,6 +409,34 @@ async function kirimQrKeCustomer(pesananId, nominalTransfer) {
   }
 }
 
+async function kirimQrKekuranganKeCustomer(tagihanId) {
+  const tagihan = db.getTagihanById(tagihanId);
+  const pesanan = db.getPesananById(tagihan.pesanan_id);
+  const jid = pesanan.customer_jid;
+
+  const caption =
+    `Kekurangan bayar untuk pesanan #${pesanan.id}: Rp${tagihan.nominal}.\n` +
+    `Total transfer: Rp${tagihan.nominal_transfer} (digit terakhir itu kode unik, bukan typo). ` +
+    `Monggo scan QR ini dan input nominal persis segitu nggih 🙏`;
+
+  const qrPath = path.join(__dirname, 'images', 'qr', 'qris-statis.jpg');
+
+  if (!fs.existsSync(qrPath)) {
+    console.log('⚠️  File QR statis tidak ditemukan di images/qr/qris-statis.jpg');
+    await kirimPesan(jid, `${caption}\n\n(QR belum tersedia, mohon hubungi kasir untuk info pembayaran)`);
+    return false;
+  }
+
+  try {
+    await sock.sendMessage(jid, { image: fs.readFileSync(qrPath), caption });
+    console.log(`✅ QR kekurangan terkirim ke ${jid} untuk tagihan #${tagihanId} (Rp${tagihan.nominal_transfer})`);
+    return true;
+  } catch (err) {
+    console.error('❌ Gagal kirim QR kekurangan:', err.message);
+    return false;
+  }
+}
+
 process.on('unhandledRejection', (err) => {
   console.error('❌ Unhandled rejection (bot tetap jalan):', err.message);
 });
@@ -309,5 +480,14 @@ process.stdin.on('data', (data) => {
     console.log(`Command "${input}" tidak dikenali. Ketik "help" untuk lihat daftar command.`);
   }
 });
+
+// Timer didaftarkan SEKALI di luar startBot, supaya tidak menumpuk tiap reconnect
+setInterval(() => {
+  cekTimeoutKeputusanHabis().catch((err) => console.error('❌ Error cek timeout:', err.message));
+}, 60 * 1000);
+
+if (!db.getInfoResto('aturan_layanan')) {
+  console.log('⚠️  info_resto kosong. Jalankan "node seed.js" supaya aturan layanan dan catatan alergen masuk ke prompt.');
+}
 
 startBot();
