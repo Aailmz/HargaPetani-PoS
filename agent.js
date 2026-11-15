@@ -1464,6 +1464,26 @@ function ringkasPesanan(p) {
   };
 }
 
+async function eksekusiCekStatusOrderSaya(_, konteks) {
+  const semuaOrder = db.getPesananHariIniByCustomer(konteks.jid);
+  const tagihan = db.getTagihanBelumLunasByCustomer(konteks.jid);
+  const infoTagihan = tagihan
+    ? { nominal: tagihan.nominal, status: tagihan.status, nominal_transfer: tagihan.nominal_transfer || null }
+    : undefined;
+
+  if (semuaOrder.length === 0) {
+    return { sukses: true, ada_order: false, kekurangan_bayar: infoTagihan, pesan: 'Tidak ada order hari ini.' };
+  }
+
+  return {
+    sukses: true,
+    ada_order: true,
+    kekurangan_bayar: infoTagihan,
+    daftar: semuaOrder.map(ringkasPesanan),
+    catatan_untuk_ai: 'Sampaikan status dengan ringkas dan natural. "total_item_saat_ini" adalah jumlah harga item yang masih berlaku; untuk pesanan draft ini bersifat sementara sampai rincian ditampilkan.',
+  };
+}
+
 async function eksekusiCekStatusOrder({ pesanan_id }) {
   if (pesanan_id) {
     const p = db.getPesananById(pesanan_id);
