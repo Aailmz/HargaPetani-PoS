@@ -596,11 +596,12 @@ CARA KERJA:
 - Kalau ada lebih dari satu menu yang menunggu keputusan habis, tanyakan menu mana (format angka), lalu isi nama_menu saat memanggil putuskan_item_habis.
 - Di akhir prompt mungkin ada blok "STATE SAAT INI" dari sistem. Itu fakta akurat, ikuti untuk menentukan tool yang tepat.
 
-ATURAN PENULISAN WAJIB:
+ATURAN PENULISAN WAJIB (PELANGGARAN = FATAL):
 - Kapitalisasi normal bahasa Indonesia, BUKAN Title Case Di Setiap Kata.
 - Jangan menyebut dirimu "AI", "bot", "sistem", atau "asisten virtual".
-- Singkat, langsung ke poin, maksimal 2-3 kalimat kecuali memang perlu daftar/rincian menu.
-- Kalau menyebutkan beberapa pilihan/item, pakai format angka (1. 2. 3.), bukan bullet/strip.
+- MAKSIMAL 1 KALIMAT per balasan. Tidak ada kalimat pembuka, tidak ada basa-basi tambahan, tidak ada penutup yang tidak diminta.
+- Pengecualian HANYA untuk: (a) daftar/rincian menu atau rincian pesanan (nama, qty, harga) yang WAJIB pakai format angka (1. 2. 3.), dan (b) kalau ada 2 informasi yang benar-benar tidak bisa digabung jadi 1 kalimat (misal: kabari sesuatu + tanya sesuatu yang beda topik). Dalam kasus (b) maksimal 2 kalimat pendek, titik.
+- Kalau ada daftar, SETELAH daftar boleh tambah maksimal 1 kalimat pendek (misal pertanyaan lanjutan), bukan paragraf.
 - JANGAN PERNAH pakai tanda strip panjang (—) atau double dash (--). Pakai koma, titik, atau kalimat baru.
 - Selesaikan kalimat dengan lengkap, jangan terpotong.`;
 
@@ -620,11 +621,10 @@ CARA KERJA:
 - Kalau kasir bilang kekurangan bayar/selisih (karena customer ganti menu lebih mahal) sudah dibayar -> panggil konfirmasi_bayar_kekurangan, bukan konfirmasi_bayar.
 - Kalau kasir/staf membalas tiket pesanan dengan "habis <menu> meja X" (lihat tiketnya di histori), panggil lapor_menu_habis_setelah_bayar dengan nama_menu dan nomor_meja itu.
 
-ATURAN PENULISAN WAJIB:
+ATURAN PENULISAN WAJIB (PELANGGARAN = FATAL):
 - Kapitalisasi normal bahasa Indonesia, BUKAN Title Case Di Setiap Kata.
 - Jangan menyebut dirimu "AI", "bot", "sistem", atau "asisten virtual".
-- Singkat dan langsung ke poin, maksimal 2 kalimat kecuali perlu daftar.
-- Kalau ada beberapa pilihan/item, pakai format angka (1. 2. 3.), bukan bullet/strip.
+- MAKSIMAL 1 KALIMAT per balasan, kecuali menampilkan daftar/data (pakai format angka 1. 2. 3.). Setelah daftar, boleh tambah maksimal 1 kalimat pendek.
 - JANGAN PERNAH pakai tanda strip panjang (—) atau double dash (--). Pakai koma, titik, atau kalimat baru.
 - Selesaikan kalimat dengan lengkap, jangan terpotong.`;
 
@@ -649,7 +649,7 @@ async function jalankanAgent({ systemPrompt, tools, historiChat, pesanBaru, ekse
         messages,
         tools,
         tool_choice: 'auto',
-        temperature: 0.8, // sedikit lebih tinggi dari grosir, biar lebih natural/variatif
+        temperature: 0.6, // diturunkan supaya lebih patuh ke instruksi panjang-pendek, masih cukup variatif
       });
     } catch (err) {
       console.error('❌ Agent API error:', err.message);
@@ -912,8 +912,8 @@ async function eksekusiBuatOrder({ teks_mentah }, konteks) {
     menu_tidak_ditemukan: hasilParse.tidakDikenali.length > 0 ? hasilParse.tidakDikenali : null,
     qr_sebelumnya_invalid: qrLamaJadiInvalid || undefined,
     catatan_untuk_ai: qrLamaJadiInvalid
-      ? 'PENTING: pesanan ini sebelumnya sudah dikirimi QR (sedang menunggu bayar), tapi karena ada tambahan item, nominal berubah dan QR lama TIDAK BERLAKU LAGI. Beri tahu customer dengan jelas (jangan sampai dia bayar pakai QR/nominal lama), rangkum SEMUA item di draft saat ini, dan minta konfirmasi ulang ("ya"/"fix") supaya QR baru dengan nominal yang benar dikirim.'
-      : 'Pesanan tercatat sebagai draft. Rangkum SEMUA item di draft saat ini (bukan cuma yang baru ditambahkan), tanya apakah sudah fix semua atau mau nambah lagi, minta bilang "ya"/"fix" untuk lanjut ke pembayaran. JANGAN sebutkan total harga dulu di sini (dihitung final pas konfirmasi).',
+      ? 'PENTING: QR lama TIDAK BERLAKU LAGI karena ada tambahan item (nominal berubah). Rangkum SEMUA item di draft saat ini dengan format angka, lalu di 1 kalimat terakhir: ingatkan jangan bayar pakai QR lama dan minta konfirmasi ulang ("ya"/"fix"). Tanpa kalimat pembuka.'
+      : 'Pesanan tercatat sebagai draft. Rangkum SEMUA item di draft saat ini (format angka, bukan cuma yang baru ditambahkan), lalu 1 kalimat terakhir: tanya sudah fix atau mau nambah lagi. Tanpa kalimat pembuka. JANGAN sebutkan total harga dulu di sini (dihitung final pas konfirmasi).',
   };
 }
 
@@ -1021,8 +1021,8 @@ async function eksekusiJawabPilihanMenu({ teks_jawaban }, konteks) {
     masih_kurang: masihKurang.length > 0 ? masihKurang.map((p) => p.menu.nama) : undefined,
     teks_order_lengkap: potonganTeksOrder,
     catatan_untuk_ai: masihKurang.length > 0
-      ? 'Masih ada pertanyaan lain yang belum terjawab, tanya ulang untuk sisanya dulu.'
-      : 'Semua pilihan sudah lengkap. Panggil tool buat_order lagi dengan teks dari field teks_order_lengkap supaya item ini masuk draft dengan porsi/opsi yang benar.',
+      ? 'Masih ada pertanyaan lain yang belum terjawab. Tanya ulang sisanya dalam 1 kalimat, format angka kalau pilihannya lebih dari 1.'
+      : 'Semua pilihan sudah lengkap. Panggil tool buat_order lagi dengan teks dari field teks_order_lengkap supaya item ini masuk draft dengan porsi/opsi yang benar. Balasan ke customer tetap 1 kalimat.',
   };
 }
 
@@ -1035,9 +1035,9 @@ async function eksekusiTampilkanRincianOrder(_, konteks) {
     return {
       sukses: false,
       pesan: 'Pesanan ini sudah di tahap menunggu bayar (QR sudah/pernah dikirim).',
-      catatan_untuk_ai: 'Tampilkan rincian item (nama, qty, harga satuan, subtotal tiap item) dan total subtotal ke customer dengan format angka.'
-      + (db.getInfoResto('aturan_layanan')?.harga ? ` Sebutkan singkat: ${db.getInfoResto('aturan_layanan').harga}` : '')
-      + ' Tanya apakah sudah fix dan boleh lanjut dikirimkan QR pembayarannya. JANGAN panggil kirim_qr_pembayaran sekarang, tunggu jawaban customer berikutnya.',
+      catatan_untuk_ai: 'Tampilkan rincian item (nama, qty, harga satuan, subtotal tiap item) dan total subtotal dengan format angka, TANPA kalimat pembuka.'
+      + (db.getInfoResto('aturan_layanan')?.harga ? ` Setelah daftar, sisipkan singkat: ${db.getInfoResto('aturan_layanan').harga}` : '')
+      + ' Di baris terakhir, 1 kalimat pendek saja: tanya apakah sudah fix untuk lanjut kirim QR. JANGAN panggil kirim_qr_pembayaran sekarang, tunggu jawaban customer berikutnya.',
     };
   }
 
@@ -1054,7 +1054,7 @@ async function eksekusiTampilkanRincianOrder(_, konteks) {
       return `${i.nama_snapshot}${infoPilihan} x${i.qty}${i.catatan ? ` (${i.catatan})` : ''} @ Rp${i.harga_satuan_snapshot} = Rp${i.harga_satuan_snapshot * i.qty}`;
     }),
     subtotal,
-    catatan_untuk_ai: 'Tampilkan rincian item (nama, qty, harga satuan, subtotal tiap item) dan total subtotal ke customer dengan format angka. Tanya apakah sudah fix dan boleh lanjut dikirimkan QR pembayarannya. JANGAN panggil kirim_qr_pembayaran sekarang, tunggu jawaban customer berikutnya.',
+    catatan_untuk_ai: 'Tampilkan rincian item (nama, qty, harga satuan, subtotal tiap item) dan total subtotal dengan format angka, TANPA kalimat pembuka/basa-basi. Di baris terakhir, 1 kalimat pendek: tanya apakah sudah fix untuk lanjut kirim QR. JANGAN panggil kirim_qr_pembayaran sekarang, tunggu jawaban customer berikutnya.',
   };
 }
 
@@ -1112,7 +1112,7 @@ async function eksekusiPutuskanItemHabis(
       item: item.nama_snapshot,
       nominal_refund: nominal,
       masih_menunggu_keputusan: sisa.length > 0 ? sisa : undefined,
-      catatan_untuk_ai: 'Beri tahu customer bahwa pembatalan sudah dicatat dan uang akan dikembalikan oleh kasir (tunai di kasir sebelum pulang, atau refund QRIS). Jangan janjikan metode spesifik, cukup bilang kasir akan proses.' + ingatkanSisa(sisa),
+      catatan_untuk_ai: 'Beri tahu customer dalam 1 kalimat bahwa pembatalan dicatat dan uang akan dikembalikan kasir. Jangan janjikan metode spesifik.' + ingatkanSisa(sisa),
     };
   }
 
@@ -1679,8 +1679,8 @@ async function eksekusiLaporMenuHabisSetelahBayar({ nama_menu, pesanan_id, nomor
 
   const customer = db.getCustomer(pesanan.customer_jid);
   const pesanKeCustomer = await ai.callAiText(
-    `Pesanan customer sudah lunas dan masuk dapur, tapi ternyata "${item.nama_snapshot}" habis. Buatkan SATU pesan (3-4 kalimat) yang: minta maaf dengan tulus, kabari menu itu habis, lalu tawarkan dua pilihan dengan jelas: (1) ganti dengan menu lain, (2) batalkan menu itu saja dan uangnya dikembalikan. Minta mereka balas dalam 10 menit. Nada hangat, nuansa resto Jawa secukupnya.`,
-    350
+    `Pesanan customer sudah lunas dan masuk dapur, tapi ternyata "${item.nama_snapshot}" habis. Buatkan SATU pesan, MAKSIMAL 2 KALIMAT: kalimat 1 minta maaf + kabari menu habis, kalimat 2 tawarkan pilihan (ganti menu lain / batalkan & uang kembali) dan minta balas dalam 10 menit. Nada hangat, nuansa resto Jawa secukupnya.`,
+    200
   );
 
   await konteks.kirimPesan(
@@ -1706,8 +1706,8 @@ async function eksekusiBatalkanOrderPaksa({ pesanan_id, alasan }, konteks) {
 
   const customer = db.getCustomer(pesanan.customer_jid);
   const pesanKeCustomer = await ai.callAiText(
-    `Pesanan #${pesanan_id} milik ${customer.nama || 'customer'} baru saja dibatalkan oleh kasir dengan alasan: "${alasan}". Buatkan SATU pesan (2-3 kalimat) yang sopan, nuansa ramah khas resto Jawa (boleh ada "nggih"/"mohon maaf nggih"), memberi tahu ini ke customer.`,
-    250
+    `Pesanan #${pesanan_id} milik ${customer.nama || 'customer'} baru saja dibatalkan oleh kasir dengan alasan: "${alasan}". Buatkan SATU pesan, MAKSIMAL 1 KALIMAT, sopan, nuansa ramah khas resto Jawa (boleh ada "nggih"/"mohon maaf nggih"), memberi tahu ini ke customer.`,
+    150
   );
 
   await konteks.kirimPesan(customer.jid, pesanKeCustomer || `Mohon maaf nggih, pesanan #${pesanan_id} kami batalkan (${alasan}).`);

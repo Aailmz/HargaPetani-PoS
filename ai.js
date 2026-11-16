@@ -16,7 +16,7 @@ Gaya bicaramu:
 - Hangat, ramah, natural seperti pelayan resto beneran -- bukan gaya robot/formal kaku.
 - Resto ini kental nuansa Jawa (Banyumasan). Boleh sesekali selingi kata khas Jawa secukupnya ("monggo", "nggih", "matur nuwun", "sugeng rawuh" kalau memang konteksnya sapaan pembuka) tapi JANGAN dipaksakan di setiap kalimat -- cukup bumbu, selebihnya bahasa Indonesia santai.
 - Panggil customer "Mas" atau "Mbak".
-- Singkat, padat, langsung ke poin.
+- SANGAT singkat: ikuti PERSIS jumlah kalimat yang diminta di instruksi spesifik pada prompt (biasanya 1 kalimat). Jangan tambah kalimat di luar yang diminta.
 
 ATURAN PENULISAN WAJIB (PELANGGARAN = FATAL):
 - Tulis dengan kapitalisasi normal bahasa Indonesia: hanya huruf pertama kalimat dan nama diri yang kapital. DILARANG menulis Setiap Kata Diawali Huruf Besar.
@@ -413,8 +413,8 @@ async function generateKonfirmasiOrderMasukDapur(namaCustomer, items, nomorMeja)
 
   const prompt = `Pembayaran dari ${namaCustomer || 'customer'} baru saja dikonfirmasi lunas oleh kasir${infoMeja}. Pesanannya: ${daftarItem}.
 
-Buatkan SATU pesan singkat (maksimal 2 kalimat) mengabarkan bahwa pembayaran sudah diterima dan pesanan langsung diteruskan ke dapur. Nada hangat, berterima kasih, nuansa khas resto Jawa secukupnya (boleh "matur nuwun"/"nggih" tapi jangan berlebihan).
-Balas HANYA dengan isi pesannya saja, tanpa tanda kutip.`;
+Buatkan SATU pesan, MAKSIMAL 1 KALIMAT, mengabarkan pembayaran diterima dan pesanan diteruskan ke dapur. Nada hangat, nuansa khas resto Jawa secukupnya (boleh "matur nuwun"/"nggih" tapi jangan berlebihan).
+Balas HANYA dengan isi pesannya saja, tanpa tanda kutip, tanpa kalimat tambahan di luar yang diminta.`;
 
   return await callAiText(prompt, 250);
 }
@@ -434,7 +434,7 @@ async function generateBroadcastPromo(menuMenarik) {
 
   const prompt = `Hari ini ada menu rekomendasi berikut: ${daftarMenu}
 
-Buatkan SATU pesan broadcast singkat (maksimal 2-3 kalimat) yang PERSUASIF dan hangat, gaya admin resto Jawa yang ramah (boleh ada "monggo mampir" atau sejenisnya secukupnya), ajak customer buat mampir/order. Highlight menu di atas tanpa terkesan notifikasi otomatis.
+Buatkan SATU pesan broadcast, MAKSIMAL 2 KALIMAT, yang PERSUASIF dan hangat, gaya admin resto Jawa yang ramah (boleh ada "monggo mampir" atau sejenisnya secukupnya), ajak customer buat mampir/order. Highlight menu di atas tanpa terkesan notifikasi otomatis.
 Balas HANYA dengan isi pesannya saja, tanpa tanda kutip.`;
 
   return await callAiText(prompt, 350);
