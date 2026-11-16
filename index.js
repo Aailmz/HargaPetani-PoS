@@ -10,6 +10,7 @@ const path = require('path');
 const fs = require('fs');
 
 const db = require('./db');
+const { rp } = require('./format');
 const ai = require('./ai');
 const agent = require('./agent');
 
@@ -40,14 +41,14 @@ async function cekTimeoutKeputusanHabis() {
     const customer = db.getCustomer(item.customer_jid);
     await kirimPesan(
       item.customer_jid,
-      `Karena belum ada balasan, ${item.nama_snapshot} dibatalin otomatis ya Mas/Mbak, uangnya (Rp${nominal}) bakal dikembalikan. Maaf banget ya 🙏`
+      `Karena belum ada balasan, ${item.nama_snapshot} dibatalin otomatis ya Mas/Mbak, uangnya (${rp(nominal)}) bakal dikembalikan. Maaf banget ya 🙏`
     );
 
     const operatorUtama = db.getAllOperators().find((o) => o.is_utama === 1);
     if (operatorUtama) {
       await kirimPesan(
         operatorUtama.jid,
-        `⏱️ AUTO-BATAL (timeout 10 menit) -- Pesanan #${item.pesanan_id} (meja ${item.nomor_meja || '-'}, ${customer.nama || 'customer'})\nItem: ${item.nama_snapshot}\nRefund: Rp${nominal}\n\nMohon proses pengembalian uangnya nggih.`
+        `⏱️ AUTO-BATAL (timeout 10 menit) -- Pesanan #${item.pesanan_id} (meja ${item.nomor_meja || '-'}, ${customer.nama || 'customer'})\nItem: ${item.nama_snapshot}\nRefund: ${rp(nominal)}\n\nMohon proses pengembalian uangnya nggih.`
       );
     }
 
@@ -385,7 +386,7 @@ async function kirimQrKeCustomer(pesananId, nominalTransfer) {
     console.log('⚠️  File QR statis tidak ditemukan di images/qr/qris-statis.jpg');
     await kirimPesan(
         customer.jid,
-        `${pesanTotal || `Total pesanan Mas/Mbak adalah Rp${nominalTransfer}.`}\n\n(QR belum tersedia, mohon hubungi kasir untuk info rekening/QR manual)`
+        `${pesanTotal || `Total pesanan Mas/Mbak adalah ${rp(nominalTransfer)}.`}\n\n(QR belum tersedia, mohon hubungi kasir untuk info rekening/QR manual)`
     );
     return false;
   }
@@ -393,9 +394,9 @@ async function kirimQrKeCustomer(pesananId, nominalTransfer) {
   try {
     await sock.sendMessage(customer.jid, {
       image: fs.readFileSync(qrPath),
-      caption: pesanTotal || `Totalnya Rp${nominalTransfer}. Scan QR ini ya, bayar persis segitu.`,
+      caption: pesanTotal || `Totalnya ${rp(nominalTransfer)}. Scan QR ini ya, bayar persis segitu.`,
     });
-    console.log(`✅ QR + total terkirim ke ${customer.jid} untuk pesanan #${pesananId} (Rp${nominalTransfer})`);
+    console.log(`✅ QR + total terkirim ke ${customer.jid} untuk pesanan #${pesananId} (${rp(nominalTransfer)})`);
     return true;
   } catch (err) {
     console.error('❌ Gagal kirim QR:', err.message);
@@ -409,8 +410,8 @@ async function kirimQrKekuranganKeCustomer(tagihanId) {
   const jid = pesanan.customer_jid;
 
   const caption =
-    `Kekurangan bayar untuk pesanan #${pesanan.id}: Rp${tagihan.nominal}.\n` +
-    `Scan QR ini ya, bayar persis Rp${tagihan.nominal_transfer} 🙏`;
+    `Kekurangan bayar untuk pesanan #${pesanan.id}: ${rp(tagihan.nominal)}.\n` +
+    `Scan QR ini ya, bayar persis ${rp(tagihan.nominal_transfer)} 🙏`;
 
   const qrPath = path.join(__dirname, 'images', 'qr', 'qris-statis.jpg');
 
@@ -422,7 +423,7 @@ async function kirimQrKekuranganKeCustomer(tagihanId) {
 
   try {
     await sock.sendMessage(jid, { image: fs.readFileSync(qrPath), caption });
-    console.log(`✅ QR kekurangan terkirim ke ${jid} untuk tagihan #${tagihanId} (Rp${tagihan.nominal_transfer})`);
+    console.log(`✅ QR kekurangan terkirim ke ${jid} untuk tagihan #${tagihanId} (${rp(tagihan.nominal_transfer)})`);
     return true;
   } catch (err) {
     console.error('❌ Gagal kirim QR kekurangan:', err.message);

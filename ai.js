@@ -74,6 +74,7 @@ async function callAiJson(systemPromptJson, userPrompt, maxTokens = 500) {
 
 const { cariKandidatMenu } = require('./matcher');
 const { upsertMenu } = require('./db');
+const { rp } = require('./format');
 
 /**
  * Tahap 1: AI ekstrak list menu mentah dari kasir jadi array terstruktur.
@@ -440,8 +441,8 @@ async function generateBroadcastPromo(menuMenarik) {
   const daftarMenu = menuMenarik
     .map((m) => {
       const hargaTampil = m.varian && m.varian.length === 1
-        ? `Rp${m.varian[0].harga}`
-        : (m.varian ? m.varian.map((v) => `${v.label} Rp${v.harga}`).join('/') : `mulai Rp${m.harga_mulai ?? '-'}`);
+        ? `${rp(m.varian[0].harga)}`
+        : (m.varian ? m.varian.map((v) => `${v.label} ${rp(v.harga)}`).join('/') : `mulai ${rp(m.harga_mulai ?? '-')}`);
       return `${m.nama} (${hargaTampil})`;
     })
     .join(', ');
@@ -459,7 +460,7 @@ async function generatePesanTotalDanQr(namaCustomer, items, subtotal, nominalTra
     .map((i) => {
       const pilihan = i.pilihan_terpilih ? JSON.parse(i.pilihan_terpilih) : null;
       const infoPilihan = pilihan ? ` [${Object.entries(pilihan).map(([k, v]) => `${k}: ${v}`).join(', ')}]` : '';
-      return `${i.nama_snapshot}${infoPilihan} x${i.qty}${i.catatan ? ` (${i.catatan})` : ''} @ Rp${i.harga_satuan_snapshot} = Rp${i.harga_satuan_snapshot * i.qty}`;
+      return `${i.nama_snapshot}${infoPilihan} x${i.qty}${i.catatan ? ` (${i.catatan})` : ''} @ ${rp(i.harga_satuan_snapshot)} = ${rp(i.harga_satuan_snapshot * i.qty)}`;
     })
     .join('\n');
 
@@ -470,12 +471,12 @@ async function generatePesanTotalDanQr(namaCustomer, items, subtotal, nominalTra
 ${daftarItem}
 
 ${infoMeja}
-Subtotal: Rp${subtotal}
-Total yang harus dibayar: Rp${nominalTransfer} (sama persis dengan total pesanan, tidak ada tambahan apa pun)
+Subtotal: ${rp(subtotal)}
+Total yang harus dibayar: ${rp(nominalTransfer)} (sama persis dengan total pesanan, tidak ada tambahan apa pun)
 
 Buatkan SATU pesan yang akan menyertai gambar QRIS, isinya:
 1. Tampilkan rincian tiap item (nama, qty, harga satuan, subtotal) apa adanya seperti di atas, jangan diringkas atau dihilangkan.
-2. Sebut total persis Rp${nominalTransfer} dan minta customer input nominal PERSIS segitu (jangan dibulatkan). Jangan menyebut kode unik, karena tidak ada.
+2. Sebut total persis ${rp(nominalTransfer)} dan minta customer input nominal PERSIS segitu (jangan dibulatkan). Jangan menyebut kode unik, karena tidak ada.
 3. Kalau nomor meja belum diinfokan, minta disebutkan.
 Nada santai, ramah, dan natural seperti chat ke teman (bukan bahasa baku), tapi rinciannya harus akurat dan jelas (jangan ubah angka apapun dari yang diberikan).
 Balas HANYA dengan isi pesannya saja, tanpa tanda kutip.`;

@@ -1,5 +1,6 @@
 const OpenAI = require('openai');
 const db = require('./db');
+const { rp } = require('./format');
 const ai = require('./ai');
 const { cariKandidatMenu, cariMenuBernamaUmum } = require('./matcher');
 
@@ -103,7 +104,7 @@ function rekomendasiUpsell(fase) {
   const andalan = tersedia.filter((m) => m.andalan);
   const sumber = [...(andalan.length >= 2 ? andalan : tersedia)].sort(() => Math.random() - 0.5);
   return sumber.slice(0, 2)
-    .map((m) => `${m.nama} (Rp${m.varian[0]?.harga ?? '-'}${m.deskripsi ? `, ${String(m.deskripsi).slice(0, 80)}` : ''})`);
+    .map((m) => `${m.nama} (${rp(m.varian[0]?.harga ?? '-')}${m.deskripsi ? `, ${String(m.deskripsi).slice(0, 80)}` : ''})`);
 }
 
 // Dipanggil setiap ada item masuk draft: tandai fase item itu selesai, tentukan jalur kalau belum.
@@ -175,7 +176,7 @@ function buatKonteksDinamisCustomer(jid) {
 
   const tagihan = db.getTagihanBelumLunasByCustomer(jid);
   if (tagihan) {
-    baris.push(`- Ada kekurangan bayar Rp${tagihan.nominal} akibat ganti menu (status: ${tagihan.status === 'MENUNGGU_BAYAR' ? 'QR sudah dikirim' : 'QR belum dikirim, menunggu customer setuju'}).`);
+    baris.push(`- Ada kekurangan bayar ${rp(tagihan.nominal)} akibat ganti menu (status: ${tagihan.status === 'MENUNGGU_BAYAR' ? 'QR sudah dikirim' : 'QR belum dikirim, menunggu customer setuju'}).`);
   }
 
   if (baris.length === 0) return '';
@@ -942,7 +943,7 @@ async function eksekusiLihatMenu({ kategori, kelompok }, konteks) {
       sukses: true,
       kelompok,
       kategori: kirim.kategori,
-      daftar: kirim.terkirim ? undefined : daftarMenu.map((m) => `${m.nama}${m.andalan ? ' ⭐' : ''}: Rp${m.varian[0]?.harga ?? '-'}`),
+      daftar: kirim.terkirim ? undefined : daftarMenu.map((m) => `${m.nama}${m.andalan ? ' ⭐' : ''}: ${rp(m.varian[0]?.harga ?? '-')}`),
       kartu_terkirim: kirim.terkirim,
       info_menu_habis: habis.length > 0
         ? `Menu di kelompok ini yang hari ini HABIS (kartu gambar masih menampilkannya): ${habis.join(', ')}. Sebutkan singkat.`
@@ -980,8 +981,8 @@ async function eksekusiLihatMenu({ kategori, kelompok }, konteks) {
       kategori: katCocok.nama,
       daftar: menuDiKategori.map((m) => {
         const hargaTampil = m.varian.length === 1
-          ? `Rp${m.varian[0].harga}`
-          : m.varian.map((v) => `${v.label} Rp${v.harga}`).join(' / ');
+          ? `${rp(m.varian[0].harga)}`
+          : m.varian.map((v) => `${v.label} ${rp(v.harga)}`).join(' / ');
         return `${m.nama}${m.andalan ? ' ⭐' : ''}: ${hargaTampil}`;
       }),
       kartu_terkirim: hasilKirim !== 'tidak_ada',
@@ -1052,7 +1053,7 @@ async function eksekusiTanyaDetailMenu({ nama_menu }, konteks) {
       tersedia: menu.tersedia,
       andalan: menu.andalan,
       deskripsi: menu.deskripsi || '(belum ada deskripsi detail tercatat untuk menu ini)',
-      varian: menu.varian.map((v) => `${v.label}: Rp${v.harga}`),
+      varian: menu.varian.map((v) => `${v.label}: ${rp(v.harga)}`),
       pilihan: menu.pilihan.map((p) => ({
         nama: p.nama,
         opsi: p.opsi,
@@ -1082,6 +1083,62 @@ async function eksekusiTanyaDetailMenu({ nama_menu }, konteks) {
 
 const orderTerakhirPerCustomer = new Map(); // jid -> { teks, waktu }
 
+// Masukkan item hasil parse ke draft pesanan customer (buat draft baru kalau belum ada).
+// Item identik (menu, porsi, opsi, catatan) digabung jadi satu baris dengan qty bertambah.
+function masukkanItemKeDraft(konteks, items) {
+  // Pesanan yang masih bisa "ditambahin": yang belum dikonfirmasi, MAUPUN yang sudah MENUNGGU_BAYAR
+  // (QR sudah dikirim tapi belum lunas). Yang SELESAI/DIBATALKAN tidak kepilih, jadi pesanan baru.
+  const pesananBisaDitambah = db.getDraftAtauMenungguBayarByCustomer(konteks.jid);
+
+  let pesananId;
+  let qrLamaJadiInvalid = false;
+
+  if (pesananBisaDitambah) {
+    pesananId = pesananBisaDitambah.id;
+    if (pesananBisaDitambah.status === 'MENUNGGU_BAYAR') {
+      // Ada tambahan setelah QR terbit -> QR lama tidak valid lagi (nominal berubah).
+      db.setStatusPesanan(pesananId, 'DRAFT_MENUNGGU_KONFIRMASI');
+      qrLamaJadiInvalid = true;
+    }
+  } else {
+    pesananId = db.buatPesananBaru(konteks.jid, db.getCustomer(konteks.jid).nomor_meja);
+  }
+
+  for (const item of items) {
+    const labelVarian = item.varian.label && item.varian.label !== 'Reguler' ? ` (${item.varian.label})` : '';
+    const pilihanJson = Object.keys(item.pilihanTerisi || {}).length > 0 ? JSON.stringify(item.pilihanTerisi) : null;
+
+    const sudahAda = db.getItemsByPesananId(pesananId).find((i) =>
+      i.status_item === 'AKTIF'
+      && i.menu_id === item.menu.id
+      && (i.varian_sku ?? null) === (item.varian.sku ?? null)
+      && (i.pilihan_terpilih ?? null) === pilihanJson
+      && (i.catatan ?? null) === (item.catatan || null)
+    );
+    if (sudahAda) {
+      db.setQtyItemPesanan(sudahAda.id, sudahAda.qty + item.qty);
+      continue;
+    }
+
+    db.tambahItemPesanan(pesananId, {
+      menu_id: item.menu.id,
+      varian_sku: item.varian.sku,
+      nama_snapshot: `${item.menu.nama}${labelVarian}`,
+      qty: item.qty,
+      harga_satuan_snapshot: item.varian.harga,
+      pilihan_terpilih: pilihanJson,
+      catatan: item.catatan || null,
+    });
+  }
+
+  db.setHargaFixPesanan(pesananId, null);
+  if (!qrLamaJadiInvalid) {
+    db.setStatusPesanan(pesananId, 'DRAFT_MENUNGGU_KONFIRMASI');
+  }
+
+  return { pesananId, qrLamaJadiInvalid };
+}
+
 async function eksekusiBuatOrder({ teks_mentah }, konteks) {
   // Dedupe: kalau teks_mentah PERSIS sama dengan panggilan terakhir dalam 10 detik,
   // ini kemungkinan besar tool call ganda (model ngulang / retry pesan), bukan order baru.
@@ -1107,90 +1164,57 @@ async function eksekusiBuatOrder({ teks_mentah }, konteks) {
     return { sukses: false, pesan: 'Tidak ada menu yang berhasil dikenali dari pesan ini.' };
   }
 
-  if (hasilParse.perluKlarifikasi.length > 0) {
-    setKlarifikasiPending(konteks.jid, hasilParse.perluKlarifikasi);
+  // ---------- Ada item yang butuh klarifikasi nama (misal "nasi goreng") dan/atau pilihan porsi/opsi ----------
+  // Item lain yang SUDAH jelas dimasukkan ke draft DULU, jangan sampai hilang. Cuma yang ambigu yang ditanyakan.
+  const adaKlarifikasi = hasilParse.perluKlarifikasi.length > 0;
+  const adaPilihan = hasilParse.perluPilihan.length > 0;
+
+  if (adaKlarifikasi || adaPilihan) {
+    let sudahMasuk;
+    if (hasilParse.items.length > 0) {
+      sudahMasuk = masukkanItemKeDraft(konteks, hasilParse.items);
+      catatFaseDariItem(konteks.jid, hasilParse.items);
+    }
+    if (adaKlarifikasi) setKlarifikasiPending(konteks.jid, hasilParse.perluKlarifikasi);
+    if (adaPilihan) setPilihanPending(konteks.jid, hasilParse.perluPilihan);
+
+    const draftSekarang = sudahMasuk
+      ? db.getItemsByPesananId(sudahMasuk.pesananId).filter((i) => i.status_item === 'AKTIF')
+      : [];
+
     return {
       sukses: true,
-      butuh_klarifikasi: true,
-      daftar_klarifikasi: hasilParse.perluKlarifikasi.map((k) => ({
-        yang_disebut_customer: k.namaInput,
-        pilihan: k.kandidatList.map((m) => `${m.nama} (mulai Rp${m.harga_mulai ?? m.varian?.[0]?.harga ?? '-'})`),
-      })),
-      item_lain_yang_jelas: hasilParse.items.map((i) => `${i.menu.nama} x${i.qty}`),
-      catatan_untuk_ai: 'Ada menu yang customer sebut dengan nama umum dan punya beberapa varian. JANGAN buat order dulu untuk item ambigu itu. Tampilkan pilihan dengan format angka, minta customer pilih.',
+      butuh_klarifikasi: adaKlarifikasi || undefined,
+      butuh_pilihan: adaPilihan || undefined,
+      daftar_klarifikasi: adaKlarifikasi
+        ? hasilParse.perluKlarifikasi.map((k) => ({
+          yang_disebut_customer: k.namaInput,
+          pilihan: k.kandidatList.map((m) => `${m.nama} (mulai ${rp(m.harga_mulai ?? m.varian?.[0]?.harga ?? '-')})`),
+        }))
+        : undefined,
+      daftar_pilihan: adaPilihan
+        ? hasilParse.perluPilihan.map((p) => ({
+          menu: p.menu.nama,
+          qty: p.qty,
+          jenis_pertanyaan: p.jenisPilihan === 'varian' ? 'porsi' : p.namaOpsi,
+          pilihan: p.opsiTersedia,
+        }))
+        : undefined,
+      item_sudah_masuk_draft: draftSekarang.length > 0
+        ? draftSekarang.map((i) => `${i.nama_snapshot} x${i.qty}`)
+        : undefined,
+      qr_sebelumnya_invalid: sudahMasuk?.qrLamaJadiInvalid || undefined,
+      catatan_untuk_ai: (sudahMasuk?.qrLamaJadiInvalid ? 'PENTING: QR lama TIDAK BERLAKU LAGI karena ada tambahan item, ingatkan singkat jangan bayar pakai QR lama. ' : '')
+        + (draftSekarang.length > 0
+          ? 'Item yang sudah jelas (item_sudah_masuk_draft) SUDAH masuk draft, JANGAN dipesan ulang lewat buat_order. '
+          : '')
+        + (adaKlarifikasi ? 'Ada menu yang customer sebut dengan nama umum dan punya beberapa varian: tampilkan pilihannya dengan format angka dan minta customer pilih. ' : '')
+        + (adaPilihan ? 'Ada menu yang butuh dipilih porsi/opsi wajibnya (misal suhu): tanyakan dengan format angka per menu. ' : '')
+        + 'Tanyakan HANYA yang ambigu, singkat, dan JANGAN upsell/tawarkan fase berikutnya dulu (nanti setelah semuanya jelas). Kalau yang jelas tadi sudah ada, boleh singkat sebut bahwa itu sudah dicatat.',
     };
   }
 
-  if (hasilParse.perluPilihan.length > 0) {
-    setPilihanPending(konteks.jid, hasilParse.perluPilihan);
-    return {
-      sukses: true,
-      butuh_pilihan: true,
-      daftar_pilihan: hasilParse.perluPilihan.map((p) => ({
-        menu: p.menu.nama,
-        qty: p.qty,
-        jenis_pertanyaan: p.jenisPilihan === 'varian' ? 'porsi' : p.namaOpsi,
-        pilihan: p.opsiTersedia,
-      })),
-      item_lain_yang_jelas: hasilParse.items.map((i) => `${i.menu.nama} x${i.qty}`),
-      catatan_untuk_ai: 'Ada menu yang butuh dipilih porsinya atau opsi wajibnya (misal suhu) sebelum masuk draft. JANGAN buat order dulu untuk item ini. Tampilkan pertanyaan dengan format angka per menu, minta customer jawab.',
-    };
-  }
-
-  // Cari pesanan yang masih bisa "ditambahin": baik yang belum dikonfirmasi, MAUPUN yang sudah
-  // MENUNGGU_BAYAR (QR sudah dikirim tapi belum lunas). Yang SELESAI/DIBATALKAN tidak akan kepilih,
-  // otomatis jadi pesanan baru.
-  const pesananBisaDitambah = db.getDraftAtauMenungguBayarByCustomer(konteks.jid);
-
-  let pesananId;
-  let qrLamaJadiInvalid = false;
-
-  if (pesananBisaDitambah) {
-    pesananId = pesananBisaDitambah.id;
-    if (pesananBisaDitambah.status === 'MENUNGGU_BAYAR') {
-      // Ada tambahan setelah QR terbit -> QR lama tidak valid lagi (nominal berubah).
-      // Turunkan lagi ke draft, nanti QR dengan nominal baru dikirim ulang.
-      db.setStatusPesanan(pesananId, 'DRAFT_MENUNGGU_KONFIRMASI');
-      qrLamaJadiInvalid = true;
-    }
-  } else {
-    pesananId = db.buatPesananBaru(konteks.jid, db.getCustomer(konteks.jid).nomor_meja);
-  }
-
-  for (const item of hasilParse.items) {
-    const labelVarian = item.varian.label && item.varian.label !== 'Reguler' ? ` (${item.varian.label})` : '';
-    const pilihanJson = Object.keys(item.pilihanTerisi || {}).length > 0 ? JSON.stringify(item.pilihanTerisi) : null;
-
-    // Item yang sama persis (menu, porsi, opsi, catatan) sudah ada di draft -> tambah jumlahnya,
-    // jangan bikin baris kembar ("Cimplung Ubi x1" + "Cimplung Ubi x2")
-    const sudahAda = db.getItemsByPesananId(pesananId).find((i) =>
-      i.status_item === 'AKTIF'
-      && i.menu_id === item.menu.id
-      && (i.varian_sku ?? null) === (item.varian.sku ?? null)
-      && (i.pilihan_terpilih ?? null) === pilihanJson
-      && (i.catatan ?? null) === (item.catatan || null)
-    );
-    if (sudahAda) {
-      db.setQtyItemPesanan(sudahAda.id, sudahAda.qty + item.qty);
-      continue;
-    }
-
-    db.tambahItemPesanan(pesananId, {
-      menu_id: item.menu.id,
-      varian_sku: item.varian.sku,
-      nama_snapshot: `${item.menu.nama}${labelVarian}`,
-      qty: item.qty,
-      harga_satuan_snapshot: item.varian.harga,
-      pilihan_terpilih: pilihanJson,
-      catatan: item.catatan || null,
-    });
-  }
-
-  db.setHargaFixPesanan(pesananId, null)
-
-  if (!qrLamaJadiInvalid) {
-    db.setStatusPesanan(pesananId, 'DRAFT_MENUNGGU_KONFIRMASI');
-  }
+  const { pesananId, qrLamaJadiInvalid } = masukkanItemKeDraft(konteks, hasilParse.items);
 
   const semuaItemSaatIni = db.getItemsByPesananId(pesananId).filter((i) => i.status_item === 'AKTIF');
 
@@ -1371,7 +1395,7 @@ async function eksekusiTampilkanRincianOrder(_, konteks) {
     items: items.map((i) => {
       const pilihan = i.pilihan_terpilih ? JSON.parse(i.pilihan_terpilih) : null;
       const infoPilihan = pilihan ? ` [${Object.entries(pilihan).map(([k, v]) => `${k}: ${v}`).join(', ')}]` : '';
-      return `${i.nama_snapshot}${infoPilihan} x${i.qty}${i.catatan ? ` (${i.catatan})` : ''} @ Rp${i.harga_satuan_snapshot} = Rp${i.harga_satuan_snapshot * i.qty}`;
+      return `${i.nama_snapshot}${infoPilihan} x${i.qty}${i.catatan ? ` (${i.catatan})` : ''} @ ${rp(i.harga_satuan_snapshot)} = ${rp(i.harga_satuan_snapshot * i.qty)}`;
     }),
     subtotal,
     catatan_untuk_ai: 'Tampilkan rincian item (nama, qty, harga satuan, subtotal tiap item) dan total subtotal dengan format angka, TANPA kalimat pembuka/basa-basi. Di baris terakhir, 1 kalimat pendek: '
@@ -1478,7 +1502,7 @@ async function eksekusiPutuskanItemHabis(
         sukses: false,
         butuh_porsi: true,
         menu: menuBaru.nama,
-        pilihan_porsi: menuBaru.varian.map((v) => `${v.label} Rp${v.harga}`),
+        pilihan_porsi: menuBaru.varian.map((v) => `${v.label} ${rp(v.harga)}`),
         catatan_untuk_ai: 'Menu pengganti punya pilihan porsi. Tanyakan ke customer (format angka, sebut harganya), lalu panggil putuskan_item_habis lagi dengan porsi_pengganti terisi (penuh/setengah).',
       };
     }
@@ -1546,9 +1570,9 @@ async function eksekusiPutuskanItemHabis(
     masih_menunggu_keputusan: sisa.length > 0 ? sisa : undefined,
     catatan_untuk_ai: (
       infoSelisih.jenis === 'kurang_bayar'
-        ? `Beri tahu customer menu sudah diganti ke ${menuBaru.nama}${labelVarian}, ada kekurangan bayar Rp${infoSelisih.nominal}. Tanya apakah setuju membayar kekurangan itu lewat QR. JANGAN kirim QR dulu, tunggu customer setuju, baru panggil kirim_qr_kekurangan di giliran berikutnya.`
+        ? `Beri tahu customer menu sudah diganti ke ${menuBaru.nama}${labelVarian}, ada kekurangan bayar ${rp(infoSelisih.nominal)}. Tanya apakah setuju membayar kekurangan itu lewat QR. JANGAN kirim QR dulu, tunggu customer setuju, baru panggil kirim_qr_kekurangan di giliran berikutnya.`
         : infoSelisih.jenis === 'lebih_bayar_dikembalikan'
-          ? `Beri tahu customer menu sudah diganti ke ${menuBaru.nama}${labelVarian}, ada kelebihan bayar Rp${infoSelisih.nominal} yang akan dikembalikan kasir.`
+          ? `Beri tahu customer menu sudah diganti ke ${menuBaru.nama}${labelVarian}, ada kelebihan bayar ${rp(infoSelisih.nominal)} yang akan dikembalikan kasir.`
           : `Beri tahu customer menu sudah diganti ke ${menuBaru.nama}${labelVarian}, harganya sama jadi tidak ada selisih.`
     ) + ingatkanSisa(sisa),
   };
@@ -1561,7 +1585,7 @@ async function laporRefundKeKasir(konteks, pesanan, item, nominal, keterangan) {
   const customer = db.getCustomer(pesanan.customer_jid);
   await konteks.kirimPesan(
     operatorUtama.jid,
-    `💸 REFUND -- Pesanan #${pesanan.id} (meja ${pesanan.nomor_meja || '-'}, ${customer.nama || 'customer'})\nItem: ${item.nama_snapshot}\nNominal: Rp${nominal}\nKeterangan: ${keterangan}\n\nMohon proses pengembalian uangnya nggih.`
+    `💸 REFUND -- Pesanan #${pesanan.id} (meja ${pesanan.nomor_meja || '-'}, ${customer.nama || 'customer'})\nItem: ${item.nama_snapshot}\nNominal: ${rp(nominal)}\nKeterangan: ${keterangan}\n\nMohon proses pengembalian uangnya nggih.`
   );
 }
 
@@ -1570,9 +1594,9 @@ async function laporGantiMenuKeKasir(konteks, pesanan, itemLama, menuBaru, infoS
   if (!operatorUtama) return;
   const customer = db.getCustomer(pesanan.customer_jid);
   const infoSelisihTeks = infoSelisih.jenis === 'kurang_bayar'
-    ? `Customer perlu bayar tambahan Rp${infoSelisih.nominal}`
+    ? `Customer perlu bayar tambahan ${rp(infoSelisih.nominal)}`
     : infoSelisih.jenis === 'lebih_bayar_dikembalikan'
-      ? `Refund ke customer Rp${infoSelisih.nominal}`
+      ? `Refund ke customer ${rp(infoSelisih.nominal)}`
       : 'Tidak ada selisih harga';
 
   await konteks.kirimPesan(
@@ -1637,7 +1661,7 @@ async function kirimInfoMenungguBayarKeKasir(konteks, pesanan, nominal) {
       `💳 MENUNGGU BAYAR | Meja ${meja} | ${customer.nama || '-'}`,
       `Pesanan #${pesanan.id}:`,
       ...barisItemUntukStaf(db.getItemsByPesananId(pesanan.id)),
-      `Total: Rp${rupiahId(nominal)}`,
+      `Total: ${rp(nominal)}`,
       '',
       `Kalau pembayaran sudah masuk, bilang: "meja ${meja} udah bayar"`,
     ].join('\n');
@@ -1654,7 +1678,7 @@ async function kirimInfoKekuranganKeKasir(konteks, tagihan, nominal) {
     const meja = customer.nomor_meja || pesanan.nomor_meja || '-';
     const pesan = [
       `💳 KEKURANGAN BAYAR | Meja ${meja} | ${customer.nama || '-'}`,
-      `Pesanan #${pesanan.id}, kekurangan akibat ganti menu: Rp${rupiahId(nominal)}`,
+      `Pesanan #${pesanan.id}, kekurangan akibat ganti menu: ${rp(nominal)}`,
       '',
       `Kalau sudah masuk, bilang: "kekurangan meja ${meja} udah masuk"`,
     ].join('\n');
@@ -2146,7 +2170,7 @@ async function eksekusiKonfirmasiBayarKekurangan({ pesanan_id, nomor_meja }, kon
   db.setTagihanLunas(t.id);
   await konteks.kirimPesan(
     t.customer_jid,
-    `Makasih${t.nama ? ` ${t.nama}` : ' Mas/Mbak'}, kekurangan Rp${t.nominal} udah masuk ya 🙏`
+    `Makasih${t.nama ? ` ${t.nama}` : ' Mas/Mbak'}, kekurangan ${rp(t.nominal)} udah masuk ya 🙏`
   );
 
   return { sukses: true, pesanan_id: t.pesanan_id, customer: t.nama, nominal: t.nominal };
@@ -2299,7 +2323,7 @@ async function eksekusiLihatSemuaMenu() {
     daftar: semuaMenu.map((m) => ({
       nama: m.nama,
       kategori: m.kategori_nama,
-      varian: m.varian.map((v) => `${v.label}: Rp${v.harga}`),
+      varian: m.varian.map((v) => `${v.label}: ${rp(v.harga)}`),
       status: m.tersedia ? 'tersedia' : 'habis',
     })),
   };
