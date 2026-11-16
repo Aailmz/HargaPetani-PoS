@@ -1,7 +1,7 @@
 const OpenAI = require('openai');
 const db = require('./db');
 const ai = require('./ai');
-const { cariKandidatMenu } = require('./matcher');
+const { cariKandidatMenu, cariMenuBernamaUmum } = require('./matcher');
 
 const client = new OpenAI({
   apiKey: process.env.AI_API_KEY,
@@ -979,7 +979,13 @@ async function eksekusiTanyaDetailMenu({ nama_menu }, konteks) {
   let adaNamaUmum = false;
 
   for (const nama of nama_menu) {
-    const match = cariKandidatMenu(nama);
+    let match = cariKandidatMenu(nama);
+    // Nama umum ("cimplung", "matcha") yang jadi bagian nama >= 2 menu: jelaskan semuanya,
+    // walau untuk order nama itu dipetakan ke 1 menu lewat alias.
+    const bernamaUmum = cariMenuBernamaUmum(nama);
+    if (bernamaUmum.length >= 2 && !bernamaUmum.some((m) => m.nama.toLowerCase() === String(nama).trim().toLowerCase())) {
+      match = { statusMatch: 'AMBIGU_MULTI', kandidatList: bernamaUmum };
+    }
     if (match.statusMatch === 'TIDAK_ADA') {
       tidakKetemu.push(nama);
       continue;

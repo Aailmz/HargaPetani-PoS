@@ -58,10 +58,35 @@ function hitungSkorGabungan(a, b) {
  * Return: { kandidatTerbaik, skorTerbaik, kandidatKedua, skorKedua, statusMatch }
  * statusMatch: 'YAKIN' | 'AMBIGU' | 'AMBIGU_MULTI' | 'TIDAK_ADA'
  */
+// Buang qty/harga yang kadang ikut kebawa AI ke teks: "Cimplung Ubi x1", "1 Cimplung Ubi", "Cimplung Ubi Rp33000"
+function bersihkanInput(namaInput) {
+  return normalisasiNama(String(namaInput || ''))
+    .replace(/\brp\s?\d+\b/g, '')
+    .replace(/\bx\s?\d+\b|\b\d+\s?x\b/g, '')
+    .replace(/^\d+\s+/, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 function cariKandidatMenu(namaInput) {
   const semuaMenu = getAllMenu();
   if (semuaMenu.length === 0) {
     return { statusMatch: 'TIDAK_ADA', kandidatTerbaik: null, skorTerbaik: 0 };
+  }
+
+  namaInput = bersihkanInput(namaInput) || namaInput;
+
+  // Sama persis dengan nama resmi 1 menu -> pasti itu, jangan dianggap ambigu walau
+  // ada menu lain yang skornya tinggi karena alias pendek (misal alias "cimplung" di Cimplung Mix Plate).
+  const persis = semuaMenu.filter((m) => normalisasiNama(m.nama) === namaInput);
+  if (persis.length === 1) {
+    return { statusMatch: 'YAKIN', kandidatTerbaik: persis[0], skorTerbaik: 1 };
+  }
+
+  // Sama persis dengan alias 1 menu -> ikuti keputusan pemilik di menu.json (misal "ubi" -> Ubi Goreng)
+  const persisAlias = semuaMenu.filter((m) => (m.alias || []).some((a) => normalisasiNama(a) === namaInput));
+  if (persisAlias.length === 1) {
+    return { statusMatch: 'YAKIN', kandidatTerbaik: persisAlias[0], skorTerbaik: 1 };
   }
 
   const skorSemua = semuaMenu
@@ -113,9 +138,19 @@ function cariKandidatMenu(namaInput) {
   return { statusMatch: 'TIDAK_ADA', kandidatTerbaik: null, skorTerbaik: terbaik.skor };
 }
 
+// Untuk PERTANYAAN ("cimplung itu apa?"): menu yang nama resminya mengandung kata itu.
+// Beda dengan cariKandidatMenu yang untuk ORDER (alias "cimplung" -> Cimplung Mix Plate).
+function cariMenuBernamaUmum(namaInput) {
+  const kata = bersihkanInput(namaInput);
+  if (!kata) return [];
+  const pola = new RegExp(`(^|\\s)${kata.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(\\s|$)`);
+  return getAllMenu().filter((m) => pola.test(normalisasiNama(m.nama)));
+}
+
 module.exports = {
   hitungSkorKemiripan,
   normalisasiNama,
   cariKandidatMenu,
+  cariMenuBernamaUmum,
   hitungSkorGabungan,
 };
