@@ -959,6 +959,8 @@ async function eksekusiLihatMenu({ kategori, kelompok }, konteks) {
 async function eksekusiTanyaDetailMenu({ nama_menu }, konteks) {
   const hasil = [];
   const tidakKetemu = [];
+  if (!Array.isArray(nama_menu)) nama_menu = [nama_menu].filter(Boolean);
+  let adaNamaUmum = false;
 
   for (const nama of nama_menu) {
     const match = cariKandidatMenu(nama);
@@ -966,11 +968,18 @@ async function eksekusiTanyaDetailMenu({ nama_menu }, konteks) {
       tidakKetemu.push(nama);
       continue;
     }
-    const menu = match.kandidatTerbaik;
 
+    // Nama umum yang cocok ke banyak menu (misal "cimplung", "sate", "tongseng"):
+    // AMBIGU_MULTI tidak punya kandidatTerbaik, jadi jelaskan semua kandidatnya sekaligus.
+    const daftarMenu = match.statusMatch === 'AMBIGU_MULTI'
+      ? match.kandidatList.slice(0, 8)
+      : [match.kandidatTerbaik];
+    if (match.statusMatch === 'AMBIGU_MULTI') adaNamaUmum = true;
+
+    for (const menu of daftarMenu) {
     // Kirim kartu menu ini kalau customer cuma tanya 1 menu spesifik (bukan perbandingan banyak menu sekaligus,
     // supaya tidak banjir gambar kalau customer tanya "bandingin sroto ayam vs daging vs mie goreng" misalnya)
-    if (nama_menu.length === 1) {
+    if (nama_menu.length === 1 && daftarMenu.length === 1) {
       await konteks.kirimKartuMenu(konteks.jid, menu);
     }
 
@@ -990,6 +999,7 @@ async function eksekusiTanyaDetailMenu({ nama_menu }, konteks) {
       kemungkinan_alergen: menu.alergen.length > 0 ? menu.alergen : 'tidak tercatat ada alergen umum, TAPI BUKAN berarti pasti bebas alergen',
       isi_mix_plate: menu.isi || undefined,
     });
+    }
   }
 
   if (hasil.length === 0) {
@@ -1000,7 +1010,10 @@ async function eksekusiTanyaDetailMenu({ nama_menu }, konteks) {
     sukses: true,
     menu: hasil,
     tidak_ketemu: tidakKetemu.length > 0 ? tidakKetemu : undefined,
-    catatan_untuk_ai: 'Jawab pertanyaan customer dari data di atas, dengan gaya ngobrol natural, JANGAN cuma baca ulang mentah-mentah. Kalau customer tanya soal alergen, sampaikan "kemungkinan_alergen" sebagai perkiraan dari resep umum, BUKAN jaminan -- kalau customer punya alergi serius, arahkan forward_pesan_ke_kasir untuk mastiin ke dapur. Kalau menu ini punya pilihan wajib (wajib_dipilih: true) dan customer belum sebut preferensinya, boleh sekalian tanya di jawabanmu.',
+    catatan_untuk_ai: (adaNamaUmum
+      ? 'Customer menyebut nama UMUM yang mencakup beberapa menu sekaligus. Jelaskan singkat apa itu secara umum dari deskripsi menu-menu di atas, lalu sebut pilihannya (format angka kalau lebih dari 2). JANGAN teruskan ke kasir, datanya sudah lengkap. '
+      : '')
+      + 'Jawab pertanyaan customer dari data di atas, dengan gaya ngobrol natural, JANGAN cuma baca ulang mentah-mentah. Kalau customer tanya soal alergen, sampaikan "kemungkinan_alergen" sebagai perkiraan dari resep umum, BUKAN jaminan -- kalau customer punya alergi serius, arahkan forward_pesan_ke_kasir untuk mastiin ke dapur. Kalau menu ini punya pilihan wajib (wajib_dipilih: true) dan customer belum sebut preferensinya, boleh sekalian tanya di jawabanmu.',
   };
 }
 
@@ -1792,7 +1805,11 @@ async function eksekusiForwardPesanKeKasir({ ringkasan, urgent, pesanan_id }, ko
   const infoPesanan = pesanan_id ? ` [pesanan #${pesanan_id}]` : '';
   const tanda = urgent ? '🔴 URGENT' : 'ℹ️';
 
-  const pesanKeKasir = `${tanda} Dari ${customer.nama || nomorBersih}${infoMeja}${infoPesanan}:\n\n${ringkasan}\n\n${urgent ? 'Bot nonaktif utk nomor ini, lanjut manual ya. ' : ''}Ketik "selesai ${nomorBersih}" kalau sudah kelar.`;
+  // "selesai <nomor>" hanya relevan kalau bot dinonaktifkan (urgent -> ESKALASI). Non-urgent = info saja, bot tetap jalan.
+  const pesanKeKasir = `${tanda} Dari ${customer.nama || nomorBersih}${infoMeja}${infoPesanan}:\n\n${ringkasan}\n\n`
+    + (urgent
+      ? `Bot nonaktif utk nomor ini, lanjut manual ya. Ketik "selesai ${nomorBersih}" kalau sudah kelar.`
+      : 'Info saja, bot tetap melayani customer ini. Kalau mau balas customer, bilang aja ke aku isinya.');
 
   await konteks.kirimPesan(operatorUtama.jid, pesanKeKasir);
 
