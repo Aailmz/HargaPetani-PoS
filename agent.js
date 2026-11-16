@@ -50,9 +50,9 @@ async function kirimKartuKelompok(konteks, kelompok) {
   return { kategori: daftar.map((k) => k.nama), terkirim };
 }
 
-// Tawarkan fase berikutnya: kirim kartu kelompoknya (kecuali minuman, tanya kopi/non-kopi dulu),
-// lalu kembalikan info + instruksi untuk AI.
-async function tawarkanFaseBerikutnya(konteks) {
+// Tawarkan fase berikutnya. kirimKartu=true hanya saat customer baru pilih jalur (fase pertama);
+// fase selanjutnya diupsell dulu tanpa kartu, kartu baru dikirim kalau customer tertarik.
+async function tawarkanFaseBerikutnya(konteks, { kirimKartu = false } = {}) {
   const alur = db.getAlur(konteks.jid);
   if (alur.tutup) return {};
   const fase = faseBerikutnya(alur);
@@ -68,20 +68,34 @@ async function tawarkanFaseBerikutnya(konteks) {
     };
   }
 
-  if (fase === 'minuman') {
+  // Fase pertama (customer baru pilih jalur): langsung kirim kartu, karena dia sendiri yang minta.
+  if (kirimKartu) {
+    const kirim = await kirimKartuKelompok(konteks, fase);
     return {
-      fase_ditawarkan: 'minuman',
-      instruksi_alur: 'Sekarang tawarkan MINUMAN: tanya mau kopi, non-kopi, atau dua-duanya (1 kalimat, boleh disambung konfirmasi singkat item yang baru dipesan). Begitu dijawab, panggil lihat_menu dengan kelompok "kopi", "non_kopi", atau "minuman" (dua-duanya). Kalau customer langsung sebut minumannya, langsung buat_order.',
+      fase_ditawarkan: fase,
+      kartu_terkirim: kirim.terkirim,
+      kategori_fase: kirim.kategori,
+      instruksi_alur: `Kartu menu ${LABEL_FASE[fase].toUpperCase()} ${kirim.terkirim ? 'sudah dikirim otomatis, jangan baca ulang harga satu-satu' : `tidak tersedia, sebutkan kategori: ${kirim.kategori.join(', ')}`}. Balas 1 kalimat singkat ajak pilih.`,
     };
   }
 
-  const kirim = await kirimKartuKelompok(konteks, fase);
+  // Fase berikutnya: UPSELL dulu, JANGAN kirim kartu. Kartu baru dikirim (lihat_menu) kalau customer tertarik.
   return {
     fase_ditawarkan: fase,
-    kartu_terkirim: kirim.terkirim,
-    kategori_fase: kirim.kategori,
-    instruksi_alur: `Sekarang tawarkan ${LABEL_FASE[fase].toUpperCase()}. ${kirim.terkirim ? 'Kartu menunya sudah dikirim otomatis, jangan baca ulang harga satu-satu.' : `Kartu tidak tersedia, sebutkan kategori: ${kirim.kategori.join(', ')}.`} Balas 1 kalimat: konfirmasi singkat item yang baru dipesan (kalau ada) + tawarkan ${LABEL_FASE[fase]}. JANGAN tanya "sudah/fix/mau nambah".`,
+    rekomendasi_upsell: rekomendasiUpsell(fase),
+    instruksi_alur: fase === 'minuman'
+      ? 'Di bawah ringkasan, UPSELL minuman dalam 1 kalimat yang menggoda (boleh sebut 1 rekomendasi dari rekomendasi_upsell yang cocok dengan pesanannya), lalu tanya mau kopi, non-kopi, atau dua-duanya. Kalau customer jawab kelompok ("non kopi", "kopi", "dua-duanya") -> panggil lihat_menu dengan kelompok "non_kopi" / "kopi" / "minuman", JANGAN buat_order. Kalau customer langsung sebut nama minuman -> buat_order.'
+      : `Di bawah ringkasan, UPSELL ${LABEL_FASE[fase]} dalam 1 kalimat yang menggoda (sebut 1 rekomendasi dari rekomendasi_upsell yang cocok dengan pesanannya), tanya mau sekalian atau nggak. JANGAN kirim menu dulu. Kalau customer tertarik tapi belum sebut menu -> lihat_menu kelompok "${fase}". Kalau setuju menu yang direkomendasikan -> buat_order. Kalau nolak -> lewati_fase.`,
   };
+}
+
+// 2-3 menu andalan yang tersedia dari fase itu, buat bahan upsell
+function rekomendasiUpsell(fase) {
+  const idKat = db.getKategoriByKelompok(fase).map((k) => k.id);
+  const tersedia = db.getMenuTersedia().filter((m) => idKat.includes(m.kategori_id));
+  const andalan = tersedia.filter((m) => m.andalan);
+  return (andalan.length > 0 ? andalan : tersedia).slice(0, 3)
+    .map((m) => `${m.nama} (Rp${m.varian[0]?.harga ?? '-'}${m.deskripsi ? `, ${String(m.deskripsi).slice(0, 80)}` : ''})`);
 }
 
 // Dipanggil setiap ada item masuk draft: tandai fase item itu selesai, tentukan jalur kalau belum.
@@ -450,7 +464,7 @@ const TOOLS_CUSTOMER = [
     type: 'function',
     function: {
       name: 'lewati_fase',
-      description: 'Customer menolak/skip kelompok menu yang sedang ditawarkan (misal "nggak usah minum", "camilannya skip", "itu aja"). Tool ini lanjut ke fase berikutnya dan mengirim kartu menunya. Kalau customer bilang sudah cukup SEMUANYA ("udah itu aja semua", "langsung bayar"), panggil dengan semua=true.',
+      description: 'Customer menolak/skip kelompok menu yang sedang ditawarkan (misal "nggak usah minum", "camilannya skip", "itu aja"). Tool ini lanjut ke fase berikutnya dan memberi bahan upsell untuk fase itu. Kalau customer bilang sudah cukup SEMUANYA ("udah itu aja semua", "langsung bayar"), panggil dengan semua=true.',
       parameters: {
         type: 'object',
         properties: {
@@ -744,10 +758,12 @@ ATURAN RESTO PENTING:
 ALUR PESAN 3 FASE (supaya customer tidak dibanjiri semua menu):
 - Di awal, tanya mau makan berat atau nyemil dulu. Jawaban customer -> pilih_jalur.
 - Jalur NYEMIL: camilan -> minuman -> makan berat. Jalur MAKAN BERAT: makan berat -> minuman -> camilan.
-- Tiap fase cuma tawarkan kelompok itu. Kartu menunya dikirim otomatis oleh tool, jangan baca ulang harga satu-satu.
-- JANGAN PERNAH tanya "sudah?", "fix?", "ada lagi?", atau "mau nambah?". Yang bikin pesanan maju adalah fasenya: begitu customer pesan, konfirmasi singkat lalu langsung tawarkan fase berikutnya (ikuti "instruksi_alur" dari hasil tool).
+- Fase pertama (setelah pilih_jalur): kartu menunya langsung dikirim otomatis, jangan baca ulang harga satu-satu.
+- Fase berikutnya: KUNCINYA UPSELLING. JANGAN langsung kirim menu. Tawarkan dulu dengan 1 kalimat yang menggoda, sebut 1 rekomendasi (dari rekomendasi_upsell) yang cocok dengan pesanannya. Kalau customer tertarik -> baru lihat_menu dengan kelompok fase itu. Kalau dia langsung setuju menu rekomendasinya -> buat_order.
+- Setiap kali ada menu yang masuk, balasan WAJIB: "Pesanan sementara:" + ringkasan SEMUA item di draft (format angka, tanpa harga), lalu DI BAWAHNYA 1 kalimat upsell/tawaran fase berikutnya.
+- JANGAN PERNAH tanya "sudah?", "fix?", "ada lagi?", atau "mau nambah?". Yang bikin pesanan maju adalah fasenya (ikuti "instruksi_alur" dari hasil tool).
 - Customer nolak fase yang ditawarkan -> lewati_fase. Customer bilang sudah cukup semuanya / mau langsung bayar -> lewati_fase dengan semua=true.
-- Fase minuman: tanya kopi, non-kopi, atau dua-duanya, lalu lihat_menu dengan kelompok yang sesuai ("kopi" / "non_kopi" / "minuman").
+- Fase minuman: upsell, tanya kopi, non-kopi, atau dua-duanya. Jawaban "kopi"/"non kopi"/"dua-duanya" itu pilihan KELOMPOK -> lihat_menu dengan kelompok "kopi" / "non_kopi" / "minuman", BUKAN buat_order.
 - FLEKSIBEL: customer boleh pesan apa saja kapan saja, loncat kelompok, minta lihat kelompok lain (lihat_menu dengan kelompok), atau langsung pesan tanpa pilih jalur. Jangan pernah menolak pesanan karena "belum fasenya".
 - Setelah semua fase lewat -> tampilkan_rincian_order (rincian + tanya meja kalau belum ada / tanya boleh kirim QR). Customer setuju -> kirim_qr_pembayaran. Bayar SEKALI di akhir.
 - Setelah lunas, sistem otomatis tanya nama customer. Customer sebut nama -> simpan_nama. Pesanan tambahan setelah lunas diproses biasa tanpa fase.
@@ -1132,9 +1148,9 @@ async function eksekusiBuatOrder({ teks_mentah }, konteks) {
       qr_sebelumnya_invalid: qrLamaJadiInvalid || undefined,
       ...infoFase,
       catatan_untuk_ai: (qrLamaJadiInvalid ? 'PENTING: QR lama TIDAK BERLAKU LAGI karena ada tambahan item, ingatkan singkat jangan bayar pakai QR lama. ' : '')
-        + 'Item sudah masuk draft. Konfirmasi singkat item yang BARU dipesan saja (tanpa daftar seluruh draft, tanpa total harga). '
+        + 'Item sudah masuk draft. Format balasan: baris pertama "Pesanan sementara:" lalu RINGKASAN SEMUA item di draft (items_total_di_draft) dengan format angka (1. 2. 3.), tanpa harga. '
         + (hasilParse.tidakDikenali.length > 0 ? 'Sebutkan juga singkat menu yang tidak ditemukan. ' : '')
-        + 'Lalu ikuti instruksi_alur.',
+        + 'Lalu di BAWAH ringkasan, 1 kalimat sesuai instruksi_alur. JANGAN tanya "sudah/fix/mau nambah".',
     };
   }
 
@@ -1770,7 +1786,7 @@ async function eksekusiPilihJalur({ jalur }, konteks) {
     return { sukses: false, pesan: 'Customer sudah bayar, pesanan tambahan diproses biasa tanpa fase.', catatan_untuk_ai: 'Tawarkan lihat_menu dengan kelompok yang customer mau.' };
   }
   db.setAlur(konteks.jid, { jalur, selesai: alur.selesai, tutup: false });
-  return { sukses: true, jalur, ...(await tawarkanFaseBerikutnya(konteks)) };
+  return { sukses: true, jalur, ...(await tawarkanFaseBerikutnya(konteks, { kirimKartu: true })) };
 }
 
 async function eksekusiLewatiFase({ semua }, konteks) {
