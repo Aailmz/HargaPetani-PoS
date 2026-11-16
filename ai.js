@@ -469,11 +469,11 @@ ${daftarItem}
 
 ${infoMeja}
 Subtotal: Rp${subtotal}
-Total transfer: Rp${nominalTransfer} (digit terakhir itu kode unik transaksi, bukan typo -- jelaskan ini ke customer)
+Total yang harus dibayar: Rp${nominalTransfer} (sama persis dengan total pesanan, tidak ada tambahan apa pun)
 
 Buatkan SATU pesan yang akan menyertai gambar QRIS, isinya:
 1. Tampilkan rincian tiap item (nama, qty, harga satuan, subtotal) apa adanya seperti di atas, jangan diringkas atau dihilangkan.
-2. Sebut total transfer persis Rp${nominalTransfer} dan minta customer input nominal PERSIS segitu (jangan dibulatkan), jelaskan kode unik di digit terakhir biar gampang dicek dari pihak kami.
+2. Sebut total persis Rp${nominalTransfer} dan minta customer input nominal PERSIS segitu (jangan dibulatkan). Jangan menyebut kode unik, karena tidak ada.
 3. Kalau nomor meja belum diinfokan, minta disebutkan.
 Nada tetap ramah, natural, nuansa resto Jawa secukupnya, tapi rinciannya harus akurat (jangan ubah angka apapun dari yang diberikan).
 Balas HANYA dengan isi pesannya saja, tanpa tanda kutip.`;

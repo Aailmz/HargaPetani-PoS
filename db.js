@@ -175,6 +175,7 @@ tambahKolomJikaBelum('customers', 'jalur', 'TEXT');                    // 'berat
 tambahKolomJikaBelum('customers', 'fase_selesai', 'TEXT');             // JSON array: ['camilan','minuman',...]
 tambahKolomJikaBelum('customers', 'alur_tutup', 'INTEGER DEFAULT 0');  // 1 = sudah bayar, pesanan berikutnya tanpa fase
 tambahKolomJikaBelum('customers', 'alur_updated_at', 'TEXT');
+tambahKolomJikaBelum('customers', 'tanya_tambah', 'INTEGER DEFAULT 0'); // 1 = bot baru tanya "ada yang mau ditambah?", menunggu jawaban
 
 // Backfill pesanan lama yang sudah SELESAI (aman dijalankan berulang)
 db.exec(`
@@ -330,23 +331,23 @@ function getAlur(jid) {
   // State dari hari sebelumnya dianggap kunjungan lama -> mulai dari awal
   if (c.alur_updated_at && hariIniLokal(c.alur_updated_at) !== hariIniLokal()) {
     resetAlur(jid);
-    return { jalur: null, selesai: [], tutup: false };
+    return { jalur: null, selesai: [], tutup: false, tanyaTambah: false };
   }
   let selesai = [];
   try { selesai = c.fase_selesai ? JSON.parse(c.fase_selesai) : []; } catch { selesai = []; }
-  return { jalur: c.jalur || null, selesai, tutup: !!c.alur_tutup };
+  return { jalur: c.jalur || null, selesai, tutup: !!c.alur_tutup, tanyaTambah: !!c.tanya_tambah };
 }
 
-function setAlur(jid, { jalur, selesai, tutup }) {
+function setAlur(jid, { jalur, selesai, tutup, tanyaTambah }) {
   getOrCreateCustomer(jid);
   db.prepare(`
-    UPDATE customers SET jalur = ?, fase_selesai = ?, alur_tutup = ?, alur_updated_at = ? WHERE jid = ?
-  `).run(jalur ?? null, JSON.stringify(selesai || []), tutup ? 1 : 0, new Date().toISOString(), jid);
+    UPDATE customers SET jalur = ?, fase_selesai = ?, alur_tutup = ?, tanya_tambah = ?, alur_updated_at = ? WHERE jid = ?
+  `).run(jalur ?? null, JSON.stringify(selesai || []), tutup ? 1 : 0, tanyaTambah ? 1 : 0, new Date().toISOString(), jid);
 }
 
 function resetAlur(jid) {
   db.prepare(`
-    UPDATE customers SET jalur = NULL, fase_selesai = NULL, alur_tutup = 0, alur_updated_at = NULL WHERE jid = ?
+    UPDATE customers SET jalur = NULL, fase_selesai = NULL, alur_tutup = 0, tanya_tambah = 0, alur_updated_at = NULL WHERE jid = ?
   `).run(jid);
 }
 
@@ -652,12 +653,13 @@ function getTagihanMenungguBayar() {
   `).all();
 }
 
-function setTagihanMenungguBayar(id, kodeUnik, nominalTransfer) {
+// Nominal bayar = nominal tagihan persis (tanpa kode unik)
+function setTagihanMenungguBayar(id, nominalTransfer) {
   db.prepare(`
     UPDATE tagihan_tambahan
-    SET kode_unik = ?, nominal_transfer = ?, status = 'MENUNGGU_BAYAR', updated_at = CURRENT_TIMESTAMP
+    SET kode_unik = NULL, nominal_transfer = ?, status = 'MENUNGGU_BAYAR', updated_at = CURRENT_TIMESTAMP
     WHERE id = ?
-  `).run(kodeUnik, nominalTransfer, id);
+  `).run(nominalTransfer, id);
 }
 
 function setTagihanLunas(id) {
@@ -666,43 +668,9 @@ function setTagihanLunas(id) {
   db.prepare(`UPDATE pesanan SET total_dibayar = COALESCE(total_dibayar, 0) + ? WHERE id = ?`).run(t.nominal, t.pesanan_id);
 }
 
-function setKodeUnikDanNominal(id, kodeUnik, nominalTransfer) {
-  db.prepare(`UPDATE pesanan SET kode_unik = ?, nominal_transfer = ? WHERE id = ?`).run(kodeUnik, nominalTransfer, id);
-}
-
-// Kode unik 1-99: hindari kode yang sudah dipakai hari ini (pesanan + tagihan tambahan).
-// Kalau 1-99 habis, cadangan: hindari yang masih MENUNGGU_BAYAR saja (lalu lanjut sampai 999).
-function getNextKodeUnikHarian(excludePesananId = null) {
-  const exclude = excludePesananId ?? -1;
-  const ambil = (rows) => rows.map((r) => r.kode_unik);
-
-  const terpakaiHariIni = new Set([
-    ...ambil(db.prepare(`
-      SELECT kode_unik FROM pesanan
-      WHERE kode_unik IS NOT NULL AND status != 'DIBATALKAN' AND id != ?
-        AND date(created_at, 'localtime') = date('now', 'localtime')
-    `).all(exclude)),
-    ...ambil(db.prepare(`
-      SELECT kode_unik FROM tagihan_tambahan
-      WHERE kode_unik IS NOT NULL AND status != 'BATAL'
-        AND date(created_at, 'localtime') = date('now', 'localtime')
-    `).all()),
-  ]);
-
-  const sedangMenunggu = new Set([
-    ...ambil(db.prepare(`
-      SELECT kode_unik FROM pesanan
-      WHERE kode_unik IS NOT NULL AND status = 'MENUNGGU_BAYAR' AND id != ?
-    `).all(exclude)),
-    ...ambil(db.prepare(`
-      SELECT kode_unik FROM tagihan_tambahan
-      WHERE kode_unik IS NOT NULL AND status = 'MENUNGGU_BAYAR'
-    `).all()),
-  ]);
-
-  for (let k = 1; k <= 99; k++) if (!terpakaiHariIni.has(k)) return k;
-  for (let k = 1; k <= 999; k++) if (!sedangMenunggu.has(k)) return k;
-  return 1;
+// Nominal bayar = subtotal persis (tanpa kode unik)
+function setNominalTransfer(id, nominalTransfer) {
+  db.prepare(`UPDATE pesanan SET kode_unik = NULL, nominal_transfer = ? WHERE id = ?`).run(nominalTransfer, id);
 }
 
 function getPesananAktifByCustomer(customerJid) {
@@ -937,7 +905,7 @@ module.exports = {
   getAllMenu, getMenuTersedia, getMenuById, getVarianBySku, setMenuTersedia,
   buatPesananBaru, tambahItemPesanan, getPesananById, getItemsByPesananId,
   getDraftAtauMenungguBayarByCustomer, hapusItemPesanan, setStatusPesanan, setHargaFixPesanan,
-  setKodeUnikDanNominal, getNextKodeUnikHarian, getPesananAktifByCustomer,
+  setNominalTransfer, getPesananAktifByCustomer,
   getPesananMenungguBayar, getPesananAktifSemua, getStatistikHarian,
   hapusPesanan, hapusSemuaPesanan,
   setStatusItemPesanan, getItemPesananById, getItemMenungguKeputusanHabis,

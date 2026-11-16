@@ -410,8 +410,7 @@ async function kirimQrKekuranganKeCustomer(tagihanId) {
 
   const caption =
     `Kekurangan bayar untuk pesanan #${pesanan.id}: Rp${tagihan.nominal}.\n` +
-    `Total transfer: Rp${tagihan.nominal_transfer} (digit terakhir itu kode unik, bukan typo). ` +
-    `Monggo scan QR ini dan input nominal persis segitu nggih 🙏`;
+    `Monggo scan QR ini dan input nominal persis Rp${tagihan.nominal_transfer} nggih 🙏`;
 
   const qrPath = path.join(__dirname, 'images', 'qr', 'qris-statis.jpg');
 
