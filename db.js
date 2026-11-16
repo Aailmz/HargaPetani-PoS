@@ -175,7 +175,6 @@ tambahKolomJikaBelum('customers', 'jalur', 'TEXT');                    // 'berat
 tambahKolomJikaBelum('customers', 'fase_selesai', 'TEXT');             // JSON array: ['camilan','minuman',...]
 tambahKolomJikaBelum('customers', 'alur_tutup', 'INTEGER DEFAULT 0');  // 1 = sudah bayar, pesanan berikutnya tanpa fase
 tambahKolomJikaBelum('customers', 'alur_updated_at', 'TEXT');
-tambahKolomJikaBelum('customers', 'tanya_tambah', 'INTEGER DEFAULT 0'); // 1 = bot baru tanya "ada yang mau ditambah?", menunggu jawaban
 
 // Backfill pesanan lama yang sudah SELESAI (aman dijalankan berulang)
 db.exec(`
@@ -331,23 +330,23 @@ function getAlur(jid) {
   // State dari hari sebelumnya dianggap kunjungan lama -> mulai dari awal
   if (c.alur_updated_at && hariIniLokal(c.alur_updated_at) !== hariIniLokal()) {
     resetAlur(jid);
-    return { jalur: null, selesai: [], tutup: false, tanyaTambah: false };
+    return { jalur: null, selesai: [], tutup: false };
   }
   let selesai = [];
   try { selesai = c.fase_selesai ? JSON.parse(c.fase_selesai) : []; } catch { selesai = []; }
-  return { jalur: c.jalur || null, selesai, tutup: !!c.alur_tutup, tanyaTambah: !!c.tanya_tambah };
+  return { jalur: c.jalur || null, selesai, tutup: !!c.alur_tutup };
 }
 
-function setAlur(jid, { jalur, selesai, tutup, tanyaTambah }) {
+function setAlur(jid, { jalur, selesai, tutup }) {
   getOrCreateCustomer(jid);
   db.prepare(`
-    UPDATE customers SET jalur = ?, fase_selesai = ?, alur_tutup = ?, tanya_tambah = ?, alur_updated_at = ? WHERE jid = ?
-  `).run(jalur ?? null, JSON.stringify(selesai || []), tutup ? 1 : 0, tanyaTambah ? 1 : 0, new Date().toISOString(), jid);
+    UPDATE customers SET jalur = ?, fase_selesai = ?, alur_tutup = ?, alur_updated_at = ? WHERE jid = ?
+  `).run(jalur ?? null, JSON.stringify(selesai || []), tutup ? 1 : 0, new Date().toISOString(), jid);
 }
 
 function resetAlur(jid) {
   db.prepare(`
-    UPDATE customers SET jalur = NULL, fase_selesai = NULL, alur_tutup = 0, tanya_tambah = 0, alur_updated_at = NULL WHERE jid = ?
+    UPDATE customers SET jalur = NULL, fase_selesai = NULL, alur_tutup = 0, alur_updated_at = NULL WHERE jid = ?
   `).run(jid);
 }
 

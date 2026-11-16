@@ -40,7 +40,7 @@ async function cekTimeoutKeputusanHabis() {
     const customer = db.getCustomer(item.customer_jid);
     await kirimPesan(
       item.customer_jid,
-      `Karena belum ada balasan, ${item.nama_snapshot} kami batalkan otomatis nggih Mas/Mbak, dan uangnya (Rp${nominal}) akan kami kembalikan. Mohon maaf atas ketidaknyamanannya 🙏`
+      `Karena belum ada balasan, ${item.nama_snapshot} dibatalin otomatis ya Mas/Mbak, uangnya (Rp${nominal}) bakal dikembalikan. Maaf banget ya 🙏`
     );
 
     const operatorUtama = db.getAllOperators().find((o) => o.is_utama === 1);
@@ -261,9 +261,9 @@ async function handlePesanNonTeks(jid, jenisMedia) {
         `ℹ️ ${customer.nama || jid.split('@')[0]}${infoMeja} mengirim ${jenisMedia}, kemungkinan bukti transfer untuk pesanan #${pesanan.id}. Mohon dicek manual nggih.`
       );
     }
-    balasan = 'Matur nuwun Mas/Mbak, kami teruskan ke kasir untuk dicek nggih. Pesanan langsung diproses begitu pembayaran terkonfirmasi 🙏';
+    balasan = 'Makasih Mas/Mbak, aku teruskan ke kasir buat dicek ya. Pesanan langsung jalan begitu pembayarannya terkonfirmasi 🙏';
   } else {
-    balasan = 'Mohon maaf nggih Mas/Mbak, saat ini kami baru bisa membaca pesan teks. Boleh ditulis saja pesannya?';
+    balasan = 'Maaf ya Mas/Mbak, aku baru bisa baca pesan teks. Boleh ditulis aja pesannya?';
   }
 
   await kirimPesan(jid, balasan);
@@ -298,7 +298,7 @@ async function prosesSambutanCustomerBaru(jid, { kirimSapaan = false } = {}) {
   db.registerCustomer(jid);
 
   if (kirimSapaan) {
-    const sapaan = 'Sugeng rawuh di The Banjoemas Resto & Cafe 🙏 Mau makan berat atau nyemil dulu, Mas/Mbak?';
+    const sapaan = 'Sugeng rawuh di The Banjoemas Resto & Cafe 🙏 Mau mulai dari makan berat, atau nyemil dulu nih, Mas/Mbak?';
     await kirimPesan(jid, sapaan);
     db.simpanChatHistory(jid, 'assistant', sapaan);
   }
@@ -329,7 +329,7 @@ async function routeCustomerTerdaftar(jid, text) {
 
   if (hasil.error) {
     console.error('❌ Agent error (customer):', hasil.error);
-    await kirimPesan(jid, hasil.jawabanFinal || 'Maaf nggih, ada kendala. Boleh diulang?');
+    await kirimPesan(jid, hasil.jawabanFinal || 'Maaf ya, lagi ada kendala. Boleh diulang?');
     return;
   }
 
@@ -393,7 +393,7 @@ async function kirimQrKeCustomer(pesananId, nominalTransfer) {
   try {
     await sock.sendMessage(customer.jid, {
       image: fs.readFileSync(qrPath),
-      caption: pesanTotal || `Total pesanan Mas/Mbak adalah Rp${nominalTransfer}. Monggo scan QR ini, input nominal persis segitu nggih.`,
+      caption: pesanTotal || `Totalnya Rp${nominalTransfer}. Scan QR ini ya, bayar persis segitu.`,
     });
     console.log(`✅ QR + total terkirim ke ${customer.jid} untuk pesanan #${pesananId} (Rp${nominalTransfer})`);
     return true;
@@ -410,7 +410,7 @@ async function kirimQrKekuranganKeCustomer(tagihanId) {
 
   const caption =
     `Kekurangan bayar untuk pesanan #${pesanan.id}: Rp${tagihan.nominal}.\n` +
-    `Monggo scan QR ini dan input nominal persis Rp${tagihan.nominal_transfer} nggih 🙏`;
+    `Scan QR ini ya, bayar persis Rp${tagihan.nominal_transfer} 🙏`;
 
   const qrPath = path.join(__dirname, 'images', 'qr', 'qris-statis.jpg');
 

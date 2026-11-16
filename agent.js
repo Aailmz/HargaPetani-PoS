@@ -85,14 +85,14 @@ async function tawarkanFaseBerikutnya(konteks, { kirimKartu = false } = {}) {
   if (fase === 'minuman') {
     return {
       fase_ditawarkan: 'minuman',
-      instruksi_alur: 'Balas 1 kalimat UPSELL minuman yang menggoda dan nyambung dengan pesanannya (misal "Enaknya ditemani minuman hangat"), TANPA menyebut nama minuman tertentu, lalu tanya mau kopi, non-kopi, atau dua-duanya. Kalau customer jawab kelompok ("non kopi", "kopi", "dua-duanya") -> lihat_menu dengan kelompok "non_kopi" / "kopi" / "minuman". Kalau customer langsung sebut nama minuman -> buat_order.',
+      instruksi_alur: 'Pilihan (b) = UPSELL minuman yang menggoda dan nyambung dengan pesanannya (misal "sekalian minum nih?"), TANPA menyebut nama minuman tertentu, lalu tanya mau kopi, non-kopi, atau dua-duanya. Kalau customer jawab kelompok ("non kopi", "kopi", "dua-duanya") -> lihat_menu dengan kelompok "non_kopi" / "kopi" / "minuman". Kalau customer langsung sebut nama minuman -> buat_order.',
     };
   }
 
   return {
     fase_ditawarkan: fase,
     rekomendasi_upsell: rekomendasiUpsell(fase),
-    instruksi_alur: `Balas UPSELL ${LABEL_FASE[fase]} dalam 1 kalimat yang menggoda (mulai dengan "Enaknya..." atau sejenisnya): sebut 1 menu dari rekomendasi_upsell, lalu tanya mau sekalian atau nggak. JANGAN kirim menu dulu. Kalau customer tertarik tapi belum sebut menu -> lihat_menu kelompok "${fase}". Kalau setuju menu yang direkomendasikan -> buat_order. Kalau nolak -> lewati_fase.`,
+    instruksi_alur: `Pilihan (b) = UPSELL ${LABEL_FASE[fase]} yang menggoda: sebut 1 menu dari rekomendasi_upsell dan tanya mau sekalian atau nggak (misal "atau sekalian ${LABEL_FASE[fase]}, ada [menu] yang lagi enak nih?"). JANGAN kirim menu dulu. Kalau customer tertarik tapi belum sebut menu -> lihat_menu kelompok "${fase}". Kalau setuju menu yang direkomendasikan -> buat_order. Kalau nolak -> lewati_fase.`,
   };
 }
 
@@ -125,7 +125,7 @@ function buatKonteksDinamisCustomer(jid) {
   const customer = db.getCustomer(jid);
 
   if (db.getChatHistory(jid, 1).length === 0) {
-    baris.push('- Ini chat PERTAMA customer. Sapa singkat pakai "Sugeng rawuh", lalu (kalau dia belum langsung pesan) tanya mau makan berat atau nyemil dulu. Jangan kirim menu dulu.');
+    baris.push('- Ini chat PERTAMA customer. Balas SATU pesan sambutan yang hangat, boleh sampai 3 kalimat (pengecualian aturan 1 kalimat): mulai dengan "Sugeng rawuh di The Banjoemas Resto & Cafe", 1 kalimat ramah tentang resto khas Banyumas dengan suasana hangat, lalu tanya mau makan berat atau nyemil dulu. Panggil "Mas/Mbak". Jangan kirim menu dulu. Kalau customer langsung memesan menu, sapa singkat lalu proses pesanannya.');
   }
 
   baris.push(customer.nomor_meja
@@ -143,10 +143,9 @@ function buatKonteksDinamisCustomer(jid) {
   } else {
     const fase = faseBerikutnya(alur);
     baris.push(`- Alur fase: jalur ${alur.jalur === 'berat' ? 'MAKAN BERAT (berat -> minuman -> camilan)' : 'NYEMIL (camilan -> minuman -> berat)'}; sudah: ${alur.selesai.map((f) => LABEL_FASE[f]).join(', ') || '-'}; ${fase ? `fase berikutnya: ${LABEL_FASE[fase].toUpperCase()}.` : 'semua fase sudah lewat, lanjut rincian & bayar.'}`);
-    const infoTambah = alur.tanyaTambah
-      ? '- Bot BARU SAJA bertanya "ada yang mau ditambah?" dan menunggu jawaban. Customer jawab tidak/udah/cukup -> panggil lewati_fase (sistem lanjut ke upsell fase berikutnya). Customer sebut menu -> buat_order.'
-      : fase && '- Kalau customer menolak tawaran fase berikutnya ("nggak usah minum"), panggil lewati_fase.';
-    if (infoTambah) baris.push(infoTambah);
+    baris.push(fase
+      ? '- Kalau customer menolak tawaran/pertanyaan tambahan ("nggak", "udah", "nggak usah minum"), panggil lewati_fase (sistem lanjut ke tawaran fase sesudahnya).'
+      : '- Kalau customer bilang tidak ada tambahan lagi, panggil lewati_fase (sistem lanjut ke rincian).');
   }
 
   const klar = getKlarifikasiPending(jid);
@@ -769,9 +768,16 @@ const SYSTEM_PROMPT_CUSTOMER = `Kamu adalah "The Banjoemas" -- bukan bot, tapi t
 
 IDENTITAS & NUANSA:
 - Resto ini kental nuansa Jawa (Banyumasan). Kamu boleh sesekali pakai sapaan/kata khas Jawa secukupnya -- "sugeng rawuh" (selamat datang) di SAPAAN PERTAMA customer baru, lalu sesekali selingi "monggo", "nggih", "matur nuwun" di tempat yang pas. JANGAN dipaksakan di setiap kalimat, cukup jadi bumbu biar kerasa khasnya, selebihnya bahasa Indonesia santai normal.
-- Panggil customer "Mas" atau "Mbak" (tebak dari konteks/nama kalau ada petunjuk, kalau tidak yakin pakai salah satu secara natural, tidak masalah). Kalau nama sudah diketahui, boleh sapa "Mas/Mbak <nama>".
+- Selama nama customer BELUM diketahui (termasuk pesan sambutan pertama), panggil "Mas/Mbak" (tulis persis begitu, jangan memilih salah satu). Setelah nama diketahui (lihat STATE SAAT INI), boleh menebak "Mas" atau "Mbak" dari nama tersebut, misal "Mas Budi" atau "Mbak Sari". Kalau nama ambigu/netral atau tidak yakin, tetap "Mas/Mbak". Kalau customer sendiri menyebut dipanggil Mas atau Mbak, ikuti itu.
 - Boleh pakai emoji yang pas biar hangat (☕🍢🍛🙏😊), MAKSIMAL 1 emoji per balasan, tidak wajib.
 - Gaya bicara hangat, luwes, kayak pelayan resto sungguhan yang available ngobrol -- BUKAN robot yang jawab template kaku.
+
+GAYA CHAT (santai tapi jelas):
+- Ngobrol kayak chat sama teman yang kebetulan kerja di resto: pakai kata sehari-hari ("nih", "ya", "aja", "yuk", "deh", "lagi enak"), BUKAN bahasa baku/formal ("silakan", "mohon", "dimohon", "harap", "kami informasikan", "berikut").
+- Kalimat pendek dan langsung ke inti. Satu pesan = satu maksud yang gampang dipahami sekali baca.
+- JELAS itu nomor satu: kalau customer harus memilih, tulis pilihannya eksplisit pakai "atau" ("mau X, atau Y?"), jangan cuma menyebut satu opsi seolah itu satu-satunya. Hindari kalimat yang bisa dibaca dua arti.
+- Tawaran/upsell dibawakan ringan dan menggoda, bukan promosi kaku ("Enaknya ditemani...", "lagi enak nih...").
+- Hindari menyebut diri "kami" berulang-ulang. Cukup langsung bilang apa yang terjadi ("Udah masuk ya", bukan "Pesanan Anda telah kami terima").
 
 SIFAT PENTING -- JANGAN KAKU:
 - Customer BOLEH loncat topik kapan saja: baru nanya menu, tiba-tiba mau order, abis itu nanya pedesnya gimana, balik lagi nambah pesanan, dll. Ikuti alur customer, JANGAN paksa dia ngikutin urutan tertentu.
@@ -783,7 +789,7 @@ Bebas ngobrol apa saja yang nyambung ke: menu & harga, detail menu (bahan, pedas
 
 ATURAN RESTO PENTING:
 - Fakta layanan, harga, nasi, sambal, dan aturan ubah/batal ada di blok "INFO RESTO DAN ATURAN" di akhir prompt. Ikuti blok itu.
-- Nomor meja DAN nama WAJIB ada sebelum QR dikirim. Kalau salah satunya belum ada saat masuk rincian/bayar, tanyakan SEKALIGUS dalam 1 kalimat (misal "Boleh tau nomor meja dan namanya, Mas?"). Nama dipakai kasir untuk mencocokkan pembayaran. Kalau meja yang disebut ternyata sedang dipakai orang lain (hasil konfirmasi_kedatangan gagal), minta customer cek ulang nomor mejanya.
+- Nomor meja DAN nama WAJIB ada sebelum QR dikirim. Kalau salah satunya belum ada saat masuk rincian/bayar, tanyakan SEKALIGUS dalam 1 kalimat (misal "Boleh tau nomor meja dan namanya, Mas/Mbak?"). Nama dipakai kasir untuk mencocokkan pembayaran. Kalau meja yang disebut ternyata sedang dipakai orang lain (hasil konfirmasi_kedatangan gagal), minta customer cek ulang nomor mejanya.
 - Kalau customer pesan lauk/menu berat, sebutkan secara natural soal nasi sesuai aturan (TAPI JANGAN tawarkan nasi putih sebagai menu kalau belum ada di data menu).
 - JANGAN PERNAH menjamin suatu menu bebas alergen tertentu, walau datanya tidak menyebut alergen itu. Kalau customer tanya soal alergi spesifik atau bilang punya alergi, jawab jujur bahwa data alergen berdasar resep umum dan perlu dipastikan ke dapur, lalu panggil forward_pesan_ke_kasir.
 
@@ -792,7 +798,8 @@ ALUR PESAN 3 FASE (supaya customer tidak dibanjiri semua menu):
 - Jalur NYEMIL: camilan -> minuman -> makan berat. Jalur MAKAN BERAT: makan berat -> minuman -> camilan.
 - Fase pertama (setelah pilih_jalur): kartu menunya langsung dikirim otomatis, jangan baca ulang harga satu-satu.
 - Fase berikutnya: KUNCINYA UPSELLING. JANGAN langsung kirim menu. Tawarkan dulu dengan 1 kalimat yang menggoda, sebut 1 rekomendasi (dari rekomendasi_upsell) yang cocok dengan pesanannya. Kalau customer tertarik -> baru lihat_menu dengan kelompok fase itu. Kalau dia langsung setuju menu rekomendasinya -> buat_order.
-- URUTAN setiap kali ada menu yang masuk: (1) balasan "Pesanan sementara:" + ringkasan SEMUA item di draft (format angka, tanpa harga), lalu 1 kalimat "Ada yang mau ditambah, Mas?". JANGAN upsell dan JANGAN kirim menu di balasan ini. (2) Kalau customer jawab tidak/udah/cukup -> lewati_fase, baru upsell fase berikutnya ("Enaknya..."). (3) Kalau customer menambah menu -> buat_order, kembali ke langkah (1).
+- SETIAP kali ada menu yang masuk, balas dalam SATU pesan: "Pesanan sementara:" + ringkasan SEMUA item di draft (format angka, tanpa harga), lalu di bawahnya DUA PILIHAN yang jelas dihubungkan kata "atau": nambah lagi, ATAU lanjut ke fase berikutnya (misal setelah camilan: "Mau nambah lagi, Mas/Mbak, atau sekalian minum nih? Kopi, non-kopi, atau dua-duanya juga boleh."). Maksimal 2 kalimat pendek di bagian itu. JANGAN kirim kartu menu dulu, baru dikirim (lihat_menu) kalau customer tertarik.
+- Customer menambah menu -> buat_order (ulangi format di atas). Customer menolak (nggak/udah/nggak usah) -> lewati_fase, sistem lanjut menawarkan fase sesudahnya.
 - JANGAN tanya "sudah?" atau "fix?". "Ada yang mau ditambah?" HANYA dipakai tepat setelah ada menu yang masuk.
 - Customer nolak tawaran fase ("nggak usah minum") -> lewati_fase. Customer bilang langsung bayar / cukup semuanya / nggak mau ditawarin lagi -> lewati_fase dengan semua=true.
 - Fase minuman: upsell, tanya kopi, non-kopi, atau dua-duanya. Jawaban "kopi"/"non kopi"/"dua-duanya" itu pilihan KELOMPOK -> lihat_menu dengan kelompok "kopi" / "non_kopi" / "minuman", BUKAN buat_order.
@@ -822,7 +829,7 @@ ATURAN PENULISAN WAJIB (PELANGGARAN = FATAL):
 - Kapitalisasi normal bahasa Indonesia, BUKAN Title Case Di Setiap Kata.
 - Jangan menyebut dirimu "AI", "bot", "sistem", atau "asisten virtual".
 - MAKSIMAL 1 KALIMAT per balasan. Tidak ada kalimat pembuka, tidak ada basa-basi tambahan, tidak ada penutup yang tidak diminta.
-- Pengecualian HANYA untuk: (a) daftar/rincian menu atau rincian pesanan (nama, qty, harga) yang WAJIB pakai format angka (1. 2. 3.), dan (b) kalau ada 2 informasi yang benar-benar tidak bisa digabung jadi 1 kalimat (misal: kabari sesuatu + tanya sesuatu yang beda topik). Dalam kasus (b) maksimal 2 kalimat pendek, titik.
+- Pengecualian HANYA untuk: (a) daftar/rincian menu atau rincian pesanan (nama, qty, harga) yang WAJIB pakai format angka (1. 2. 3.), (b) kalau ada 2 informasi yang benar-benar tidak bisa digabung jadi 1 kalimat (misal: kabari sesuatu + tanya sesuatu yang beda topik), maksimal 2 kalimat pendek, titik, dan (c) pesan sambutan pertama ke customer baru, maksimal 3 kalimat dan wajib menyebut nama "The Banjoemas Resto & Cafe".
 - Kalau ada daftar, SETELAH daftar boleh tambah maksimal 1 kalimat pendek (misal pertanyaan lanjutan), bukan paragraf.
 - JANGAN PERNAH pakai tanda strip panjang (—) atau double dash (--). Pakai koma, titik, atau kalimat baru.
 - Selesaikan kalimat dengan lengkap, jangan terpotong.`;
@@ -914,7 +921,7 @@ async function jalankanAgent({ systemPrompt, tools, historiChat, pesanBaru, ekse
   }
 
   console.log('⚠️  Agent mencapai batas iterasi maksimal.');
-  return { jawabanFinal: 'Maaf nggih, ada kendala teknis. Boleh diulang pesannya?', error: 'MAX_ITERATIONS' };
+  return { jawabanFinal: 'Maaf ya, lagi ada kendala teknis. Boleh diulang pesannya?', error: 'MAX_ITERATIONS' };
 }
 
 // ========== EKSEKUTOR — CUSTOMER ==========
@@ -1192,9 +1199,10 @@ async function eksekusiBuatOrder({ teks_mentah }, konteks) {
   const alurAktif = !db.getAlur(konteks.jid).tutup;
 
   if (alurAktif) {
-    // Setelah item masuk: TANYA DULU "ada yang mau ditambah?". Upsell fase berikutnya baru muncul
-    // kalau customer bilang tidak (lewati_fase), jadi tidak langsung dibanjiri tawaran.
-    db.setAlur(konteks.jid, { ...db.getAlur(konteks.jid), tanyaTambah: true });
+    // Setelah item masuk: SATU pesan berisi ringkasan + "ada yang mau ditambah?" + upsell fase berikutnya.
+    // Kartu menu fase berikutnya TIDAK dikirim, baru dikirim kalau customer tertarik.
+    const faseNext = faseBerikutnya(db.getAlur(konteks.jid));
+    const infoFase = faseNext ? await tawarkanFaseBerikutnya(konteks) : {};
     return {
       sukses: true,
       pesanan_id: pesananId,
@@ -1202,10 +1210,13 @@ async function eksekusiBuatOrder({ teks_mentah }, konteks) {
       items_total_di_draft: semuaItemSaatIni.map((i) => `${i.nama_snapshot} x${i.qty}${i.catatan ? ` (${i.catatan})` : ''}`),
       menu_tidak_ditemukan: hasilParse.tidakDikenali.length > 0 ? hasilParse.tidakDikenali : null,
       qr_sebelumnya_invalid: qrLamaJadiInvalid || undefined,
+      ...infoFase,
       catatan_untuk_ai: (qrLamaJadiInvalid ? 'PENTING: QR lama TIDAK BERLAKU LAGI karena ada tambahan item, ingatkan singkat jangan bayar pakai QR lama. ' : '')
         + 'Item sudah masuk draft. Format balasan: baris pertama "Pesanan sementara:" lalu RINGKASAN SEMUA item di draft (items_total_di_draft) dengan format angka (1. 2. 3.), tanpa harga. '
         + (hasilParse.tidakDikenali.length > 0 ? 'Sebutkan juga singkat menu yang tidak ditemukan. ' : '')
-        + 'Lalu di BAWAH ringkasan, 1 kalimat saja: tanya apakah ada yang mau ditambah (misal "Ada yang mau ditambah, Mas?"). JANGAN upsell, JANGAN tawarkan/kirim menu apa pun di balasan ini. Kalau customer menjawab tidak/udah/cukup -> panggil lewati_fase. Kalau menyebut menu lagi -> buat_order.',
+        + (faseNext
+          ? 'Lalu di BAWAH ringkasan, SATU paragraf pendek (maksimal 2 kalimat) yang menawarkan DUA PILIHAN secara eksplisit dengan kata "atau", biar customer sadar ini pilihan dan bukan tawaran tunggal: (a) nambah menu lagi dari yang sedang dipesan, ATAU (b) lanjut ke fase berikutnya sesuai instruksi_alur. Contoh untuk minuman: "Mau nambah lagi, Mas/Mbak, atau sekalian minum nih? Kopi, non-kopi, atau dua-duanya juga boleh." Jangan cuma tanya "ada yang mau ditambah?" lalu loncat ke tawaran lain tanpa kata penghubung. JANGAN kirim kartu menu dulu. Kalau customer menyebut menu -> buat_order. Kalau menjawab kelompok/tertarik -> lihat_menu. Kalau menolak (nggak/udah) -> lewati_fase.'
+          : 'Semua fase sudah ditawarkan. Lalu di BAWAH ringkasan, 1 kalimat saja: tanya apakah ada yang mau ditambah. Kalau customer menjawab tidak/udah/cukup -> panggil lewati_fase (lanjut ke rincian). Kalau menyebut menu lagi -> buat_order.'),
     };
   }
 
@@ -1948,7 +1959,7 @@ async function eksekusiUbahJumlahItem({ nama_menu, jumlah }, konteks) {
   const semua = db.getItemsByPesananId(draft.id).filter((i) => i.status_item === 'AKTIF');
   const alur = db.getAlur(konteks.jid);
   const alurAktif = !alur.tutup;
-  if (alurAktif) db.setAlur(konteks.jid, { ...alur, tanyaTambah: true });
+  const faseMenunggu = alurAktif ? faseBerikutnya(alur) : null;
 
   return {
     sukses: true,
@@ -1959,9 +1970,11 @@ async function eksekusiUbahJumlahItem({ nama_menu, jumlah }, konteks) {
     qr_sebelumnya_invalid: qrLamaJadiInvalid || undefined,
     catatan_untuk_ai: (qrLamaJadiInvalid ? 'PENTING: QR lama TIDAK BERLAKU LAGI karena jumlah berubah, ingatkan singkat jangan bayar pakai QR lama. ' : '')
       + 'Format balasan: "Pesanan sementara:" lalu ringkasan SEMUA item (items_total_di_draft) format angka tanpa harga. '
-      + (alurAktif
-        ? 'Di bawahnya 1 kalimat: tanya apakah ada yang mau ditambah. JANGAN upsell. Kalau customer menjawab tidak/udah/cukup -> lewati_fase.'
-        : 'Di bawahnya 1 kalimat pendek lanjut ke rincian.'),
+      + (faseMenunggu
+        ? `Di bawahnya 1 kalimat dua pilihan: nambah lagi, ATAU lanjut ke ${LABEL_FASE[faseMenunggu]} (tanpa kirim menu). Kalau customer menolak -> lewati_fase.`
+        : alurAktif
+          ? 'Di bawahnya 1 kalimat: tanya apakah ada yang mau ditambah. Kalau customer menjawab tidak/udah -> lewati_fase.'
+          : 'Di bawahnya 1 kalimat pendek lanjut ke rincian.'),
   };
 }
 
@@ -1971,7 +1984,7 @@ async function eksekusiPilihJalur({ jalur }, konteks) {
   if (alur.tutup) {
     return { sukses: false, pesan: 'Customer sudah bayar, pesanan tambahan diproses biasa tanpa fase.', catatan_untuk_ai: 'Tawarkan lihat_menu dengan kelompok yang customer mau.' };
   }
-  db.setAlur(konteks.jid, { jalur, selesai: alur.selesai, tutup: false, tanyaTambah: false });
+  db.setAlur(konteks.jid, { jalur, selesai: alur.selesai, tutup: false });
   return { sukses: true, jalur, ...(await tawarkanFaseBerikutnya(konteks, { kirimKartu: true })) };
 }
 
@@ -1982,20 +1995,20 @@ async function eksekusiLewatiFase({ semua }, konteks) {
   const jalur = alur.jalur || 'camilan';
   const fase = faseBerikutnya({ ...alur, jalur });
 
-  // Customer menjawab "ada yang mau ditambah?" dengan tidak: fase berikutnya BELUM ditawarkan,
-  // jadi jangan dilewati, langsung upsell. Kalau yang ditolak adalah tawaran fase, fase itu dilewati.
+  // Tawaran fase berikutnya sudah dilontarkan bareng "ada yang mau ditambah?", jadi "nggak" berarti
+  // fase itu ditolak: lewati, lalu tawarkan fase sesudahnya (atau lanjut rincian kalau sudah habis).
   let selesai = alur.selesai;
   let dilewati;
   if (semua) {
     selesai = [...URUTAN_JALUR[jalur]];
     dilewati = 'semua';
-  } else if (!alur.tanyaTambah && fase) {
+  } else if (fase) {
     selesai = [...alur.selesai, fase];
     dilewati = LABEL_FASE[fase];
   }
-  db.setAlur(konteks.jid, { jalur, selesai, tutup: false, tanyaTambah: false });
+  db.setAlur(konteks.jid, { jalur, selesai, tutup: false });
 
-  return { sukses: true, dilewati, tidak_ada_tambahan: alur.tanyaTambah || undefined, ...(await tawarkanFaseBerikutnya(konteks)) };
+  return { sukses: true, dilewati, ...(await tawarkanFaseBerikutnya(konteks)) };
 }
 
 async function eksekusiSimpanNama({ nama }, konteks) {
@@ -2101,13 +2114,13 @@ async function eksekusiKonfirmasiBayar({ pesanan_id, nomor_meja }, konteks) {
   const items = db.getItemsByPesananId(pesanan.id);
   const pesanKeCustomer = await ai.generateKonfirmasiOrderMasukDapur(customer.nama, items, pesanan.nomor_meja);
 
-  const pesanDapur = pesanKeCustomer || `Matur nuwun Mas/Mbak ${customer.nama || ''}, pembayaran sudah kami terima. Pesanan langsung kami teruskan ke dapur nggih 🙏`;
+  const pesanDapur = pesanKeCustomer || `Makasih${customer.nama ? ` ${customer.nama}` : ' Mas/Mbak'}, pembayarannya udah masuk. Pesanannya langsung jalan ke dapur ya 🙏`;
   await konteks.kirimPesan(customer.jid, pesanDapur);
   db.simpanChatHistory(customer.jid, 'assistant', pesanDapur);
 
   // Alur 3 fase selesai: pesanan berikutnya diproses biasa tanpa fase
   const alur = db.getAlur(customer.jid);
-  db.setAlur(customer.jid, { ...alur, tutup: true, tanyaTambah: false });
+  db.setAlur(customer.jid, { ...alur, tutup: true });
 
   return { sukses: true, pesanan_id: pesanan.id, customer: customer.nama, nomor_meja: pesanan.nomor_meja };
 }
@@ -2133,7 +2146,7 @@ async function eksekusiKonfirmasiBayarKekurangan({ pesanan_id, nomor_meja }, kon
   db.setTagihanLunas(t.id);
   await konteks.kirimPesan(
     t.customer_jid,
-    `Matur nuwun Mas/Mbak${t.nama ? ` ${t.nama}` : ''}, kekurangan bayar Rp${t.nominal} sudah kami terima nggih 🙏`
+    `Makasih${t.nama ? ` ${t.nama}` : ' Mas/Mbak'}, kekurangan Rp${t.nominal} udah masuk ya 🙏`
   );
 
   return { sukses: true, pesanan_id: t.pesanan_id, customer: t.nama, nominal: t.nominal };
@@ -2197,7 +2210,7 @@ async function eksekusiLaporMenuHabisSetelahBayar({ nama_menu, pesanan_id, nomor
 
   await konteks.kirimPesan(
     customer.jid,
-    pesanKeCustomer || `Mohon maaf nggih Mas/Mbak, ternyata ${item.nama_snapshot} pesanan tadi habis. Mau diganti menu lain atau dibatalkan saja (uang kami kembalikan)? Mohon dibalas dalam 10 menit nggih.`
+    pesanKeCustomer || `Maaf ya Mas/Mbak, ${item.nama_snapshot} yang tadi ternyata habis. Mau diganti menu lain, atau dibatalin aja (uangnya dikembalikan)? Dibalas dalam 10 menit ya.`
   );
 
   return {
@@ -2218,11 +2231,11 @@ async function eksekusiBatalkanOrderPaksa({ pesanan_id, alasan }, konteks) {
 
   const customer = db.getCustomer(pesanan.customer_jid);
   const pesanKeCustomer = await ai.callAiText(
-    `Pesanan #${pesanan_id} milik ${customer.nama || 'customer'} baru saja dibatalkan oleh kasir dengan alasan: "${alasan}". Buatkan SATU pesan, MAKSIMAL 1 KALIMAT, sopan, nuansa ramah khas resto Jawa (boleh ada "nggih"/"mohon maaf nggih"), memberi tahu ini ke customer.`,
+    `Pesanan #${pesanan_id} milik ${customer.nama || 'customer'} baru saja dibatalkan oleh kasir dengan alasan: "${alasan}". Buatkan SATU pesan, MAKSIMAL 1 KALIMAT, santai tapi sopan seperti chat ke teman (boleh "maaf ya", bukan bahasa baku), memberi tahu ini ke customer.`,
     150
   );
 
-  await konteks.kirimPesan(customer.jid, pesanKeCustomer || `Mohon maaf nggih, pesanan #${pesanan_id} kami batalkan (${alasan}).`);
+  await konteks.kirimPesan(customer.jid, pesanKeCustomer || `Maaf ya, pesanan #${pesanan_id} dibatalkan (${alasan}).`);
   await kirimTiketPesananKeStaf(konteks, db.getPesananById(pesanan.id), items);
   return { sukses: true, pesanan_id, customer: customer.nama, alasan };
 }
