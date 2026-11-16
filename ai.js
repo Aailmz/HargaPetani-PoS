@@ -156,7 +156,7 @@ Balas JSON array, tiap elemen: {"namaInputAsli": "...", "namaMenuTerpilih": "...
   return hasil.map((h) => {
     const pending = daftarPending.find((p) => p.namaInput === h.namaInputAsli);
     const menu = pending?.kandidatList.find((m) => m.nama === h.namaMenuTerpilih);
-    return menu ? { menu, qty: h.qty || pending.qty } : null;
+    return menu ? { menu, qty: h.qty || pending.qty, tipe: pending.tipe || null } : null;
   }).filter(Boolean);
 }
 
@@ -250,14 +250,15 @@ Selain itu, deteksi juga indikasi berikut KALAU disebutkan eksplisit oleh pelang
 - "porsi": kalau pelanggan sebut "setengah porsi"/"1/2 porsi"/"porsi kecil" -> "setengah". Kalau sebut "porsi penuh"/"porsi besar"/"porsi normal" -> "penuh". Kalau tidak disebut sama sekali -> null.
 - "suhu": kalau pelanggan sebut "panas"/"hangat" -> "panas". Kalau sebut "dingin"/"es"/"ice" -> "dingin". Kalau tidak disebut -> null.
 - "sambal": kalau pelanggan sebut "tanpa sambal"/"gak pake sambal"/"no sambal" -> "tanpa". Kalau sebut "pakai sambal"/"dengan sambal" -> "dengan". Kalau tidak disebut -> null.
-- "catatan": catatan bebas lain di luar 3 hal di atas (misal "pedesnya dikit", "tanpa bawang", "less sugar"). Kalau tidak ada -> null.
+- "tipe": "take_away" kalau pelanggan menyebut take away / bawa pulang / dibungkus / TA untuk menu itu. "dine_in" kalau menyebut makan sini / dine in. Kalau pelanggan menyebut tipe untuk SEMUA menu sekaligus (misal "semuanya take away"), isi tipe itu ke setiap menu. Kalau tidak disebut sama sekali -> null.
+- "catatan": catatan bebas lain di luar hal di atas (misal "pedesnya dikit", "tanpa bawang", "less sugar"). Jangan masukkan take away/dine in ke catatan. Kalau tidak ada -> null.
 
 Abaikan kata-kata basa-basi seperti "dong", "ya", "mau pesan", dll -- fokus cuma nama menu + jumlah + indikasi di atas.
 
 Kalau pesan ini sama sekali TIDAK berisi order menu (misal cuma chat biasa/pertanyaan/sapaan), balas array kosong [].
 
 Balas JSON array, format tiap elemen:
-{"nama": "...", "qty": angka, "porsi": "setengah"/"penuh"/null, "suhu": "panas"/"dingin"/null, "sambal": "dengan"/"tanpa"/null, "catatan": "..." atau null}`;
+{"nama": "...", "qty": angka, "porsi": "setengah"/"penuh"/null, "suhu": "panas"/"dingin"/null, "sambal": "dengan"/"tanpa"/null, "tipe": "take_away"/"dine_in"/null, "catatan": "..." atau null}`;
 
   const hasil = await callAiJson(systemJson, userPrompt, 1200);
   if (!hasil || !Array.isArray(hasil)) return [];
@@ -268,6 +269,13 @@ Balas JSON array, format tiap elemen:
  * Proses order customer, match tiap item ke menu di DB.
  * Return: { items: [...], tidakDikenali: [...], perluKlarifikasi: [...] }
  */
+function normalisasiTipe(t) {
+  const x = String(t || '').toLowerCase().replace(/[s-]/g, '_');
+  if (x === 'take_away' || x === 'takeaway') return 'TAKE_AWAY';
+  if (x === 'dine_in' || x === 'dinein') return 'DINE_IN';
+  return null; // tidak disebut -> pakai default customer
+}
+
 async function prosesOrderCustomer(pesanCustomer) {
   const itemMentah = await ekstrakOrderCustomer(pesanCustomer);
 
@@ -282,6 +290,7 @@ async function prosesOrderCustomer(pesanCustomer) {
       hasil.perluKlarifikasi.push({
         namaInput: item.nama,
         qty: item.qty || 1,
+        tipe: normalisasiTipe(item.tipe),
         catatan: item.catatan || null,
         kandidatList: matchResult.kandidatList,
       });
@@ -294,6 +303,7 @@ async function prosesOrderCustomer(pesanCustomer) {
       hasil.perluKlarifikasi.push({
         namaInput: item.nama,
         qty: item.qty || 1,
+        tipe: normalisasiTipe(item.tipe),
         catatan: item.catatan || null,
         kandidatList: [matchResult.kandidatTerbaik, matchResult.kandidatKedua],
       });
@@ -326,6 +336,7 @@ async function prosesOrderCustomer(pesanCustomer) {
         qty: item.qty || 1,
         jenisPilihan: 'varian',
         opsiTersedia: resolusiVarian.opsiTersedia, // label-label varian, misal ["1 porsi", "1/2 porsi"]
+        tipe: normalisasiTipe(item.tipe),
         catatan: item.catatan || null,
         parsial: { suhu: item.suhu, sambal: item.sambal }, // dibawa supaya tidak hilang pas user jawab
       });
@@ -361,6 +372,7 @@ async function prosesOrderCustomer(pesanCustomer) {
         opsiTersedia: pilihanWajibKosong.opsi, // sudah array
         varianSku: varianTerpilih.sku,
         pilihanSudahTerisi: pilihanTerisi,
+        tipe: normalisasiTipe(item.tipe),
         catatan: item.catatan || null,
       });
       continue;
@@ -372,6 +384,7 @@ async function prosesOrderCustomer(pesanCustomer) {
       pilihanTerisi,
       namaInput: item.nama,
       qty: item.qty || 1,
+      tipe: normalisasiTipe(item.tipe),
       catatan: item.catatan || null,
     });
   }
@@ -422,11 +435,12 @@ function cocokkanNilaiPilihan(pilihan, indikasi) {
 /**
  * Dipanggil setelah kasir konfirmasi_bayar -> kabari customer pesanan masuk dapur.
  */
-async function generateKonfirmasiOrderMasukDapur(namaCustomer, items, nomorMeja) {
+async function generateKonfirmasiOrderMasukDapur(namaCustomer, items, nomorMeja, nomorPesananTampil = null) {
   const daftarItem = items.map((i) => `${i.nama_snapshot} x${i.qty}${i.catatan ? ` (${i.catatan})` : ''}`).join(', ');
   const infoMeja = nomorMeja ? ` untuk meja ${nomorMeja}` : '';
+  const infoNomor = nomorPesananTampil ? ` Nomor pesanannya ${nomorPesananTampil} (WAJIB disebut di pesan).` : '';
 
-  const prompt = `Pembayaran dari ${namaCustomer || 'customer'} baru saja dikonfirmasi lunas oleh kasir${infoMeja}. Pesanannya: ${daftarItem}.
+  const prompt = `Pembayaran dari ${namaCustomer || 'customer'} baru saja dikonfirmasi lunas oleh kasir${infoMeja}. Pesanannya: ${daftarItem}.${infoNomor}
 
 Buatkan SATU pesan, MAKSIMAL 1 KALIMAT, mengabarkan pembayaran diterima dan pesanan diteruskan ke dapur. Nada hangat dan santai seperti chat ke teman (misal "Makasih ya, pembayarannya udah masuk, pesanannya langsung jalan ke dapur"), bukan bahasa baku. Boleh sedikit "matur nuwun"/"nggih" tapi jangan berlebihan.
 Balas HANYA dengan isi pesannya saja, tanpa tanda kutip, tanpa kalimat tambahan di luar yang diminta.`;
@@ -455,29 +469,36 @@ Balas HANYA dengan isi pesannya saja, tanpa tanda kutip.`;
   return await callAiText(prompt, 350);
 }
 
-async function generatePesanTotalDanQr(namaCustomer, items, subtotal, nominalTransfer, nomorMeja) {
+async function generatePesanTotalDanQr(namaCustomer, items, subtotal, nominalTransfer, nomorMeja, opsi = {}) {
   const daftarItem = items
     .map((i) => {
       const pilihan = i.pilihan_terpilih ? JSON.parse(i.pilihan_terpilih) : null;
       const infoPilihan = pilihan ? ` [${Object.entries(pilihan).map(([k, v]) => `${k}: ${v}`).join(', ')}]` : '';
-      return `${i.nama_snapshot}${infoPilihan} x${i.qty}${i.catatan ? ` (${i.catatan})` : ''} @ ${rp(i.harga_satuan_snapshot)} = ${rp(i.harga_satuan_snapshot * i.qty)}`;
+      const infoTipe = i.tipe === 'TAKE_AWAY' ? ' [take away]' : '';
+      return `${i.nama_snapshot}${infoPilihan}${infoTipe} x${i.qty}${i.catatan ? ` (${i.catatan})` : ''} @ ${rp(i.harga_satuan_snapshot)} = ${rp(i.harga_satuan_snapshot * i.qty)}`;
     })
     .join('\n');
 
-  const infoMeja = nomorMeja ? `Meja: ${nomorMeja}` : 'Nomor meja belum diinfokan -- mohon sebutkan juga ya Mas/Mbak.';
+  // Pre-order (belum sampai): meja belum perlu, yang penting nomor pesanan + jam datang
+  let infoMeja = 'Nomor meja belum diinfokan -- mohon sebutkan juga ya Mas/Mbak.';
+  if (opsi.jamDatang) infoMeja = `Datang jam ${opsi.jamDatang} (meja diinfokan nanti begitu sampai di resto)`;
+  else if (nomorMeja) infoMeja = `Meja: ${nomorMeja}`;
+  const infoNomor = opsi.nomorPesanan
+    ? `Nomor pesanan: ${opsi.nomorPesanan} (WAJIB disebut jelas, customer perlu menyebutkannya ke waiter nanti)\n`
+    : '';
 
   const prompt = `Pesanan ${namaCustomer || 'customer'} sudah fix. Rinciannya:
 
 ${daftarItem}
 
-${infoMeja}
+${infoNomor}${infoMeja}
 Subtotal: ${rp(subtotal)}
 Total yang harus dibayar: ${rp(nominalTransfer)} (sama persis dengan total pesanan, tidak ada tambahan apa pun)
 
 Buatkan SATU pesan yang akan menyertai gambar QRIS, isinya:
 1. Tampilkan rincian tiap item (nama, qty, harga satuan, subtotal) apa adanya seperti di atas, jangan diringkas atau dihilangkan.
 2. Sebut total persis ${rp(nominalTransfer)} dan minta customer input nominal PERSIS segitu (jangan dibulatkan). Jangan menyebut kode unik, karena tidak ada.
-3. Kalau nomor meja belum diinfokan, minta disebutkan.
+3. Sebut nomor pesanannya kalau ada. Jangan minta nomor meja kalau customer belum sampai di resto (datang nanti). Kalau customer sudah di resto dan nomor meja belum diinfokan, minta disebutkan.
 Nada santai, ramah, dan natural seperti chat ke teman (bukan bahasa baku), tapi rinciannya harus akurat dan jelas (jangan ubah angka apapun dari yang diberikan).
 Balas HANYA dengan isi pesannya saja, tanpa tanda kutip.`;
 

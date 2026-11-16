@@ -10,7 +10,7 @@ const path = require('path');
 const fs = require('fs');
 
 const db = require('./db');
-const { rp } = require('./format');
+const { rp, nomorPesanan } = require('./format');
 const ai = require('./ai');
 const agent = require('./agent');
 
@@ -41,7 +41,7 @@ async function cekTimeoutKeputusanHabis() {
     const customer = db.getCustomer(item.customer_jid);
     await kirimPesan(
       item.customer_jid,
-      `Karena belum ada balasan, ${item.nama_snapshot} dibatalin otomatis ya Mas/Mbak, uangnya (${rp(nominal)}) bakal dikembalikan. Maaf banget ya 🙏`
+      `Karena belum ada balasan, ${item.nama_snapshot} dibatalin otomatis ya Mas/Mbak, uangnya (${rp(nominal)}) dikembalikan tunai di kasir. Maaf banget ya 🙏`
     );
 
     const operatorUtama = db.getAllOperators().find((o) => o.is_utama === 1);
@@ -53,6 +53,21 @@ async function cekTimeoutKeputusanHabis() {
     }
 
     console.log(`⏱️  Auto-batal item #${item.id} (${item.nama_snapshot}) karena timeout.`);
+  }
+}
+
+// Pre-order lunas yang jam datangnya tinggal <= 30 menit dan customer belum sampai: tanya apakah tetap datang.
+// Jawaban customer ditangani agent lewat tool jadwal_kedatangan (ya -> mulai masak, tidak -> batal, ubah jam).
+async function cekJadwalPreOrder() {
+  if (!sock?.user) return;
+  for (const p of db.getPreOrderPerluDitanya(30)) {
+    const sapa = [p.sapaan, p.nama].filter(Boolean).join(' ') || 'Mas/Mbak';
+    const nomor = nomorPesanan(p);
+    const pesan = `Halo ${sapa}, pesanan ${nomor} buat jam ${p.jam_datang} nanti ya. Tetap sampai resto tepat waktu? Kalau iya, langsung kami masak biar pas sampai udah siap 🍛`;
+    db.setJadwalPesanan(p.id, { jadwalStatus: 'DITANYA' }); // ditandai dulu supaya tidak terkirim dobel kalau kirimPesan lambat
+    await kirimPesan(p.customer_jid, pesan);
+    db.simpanChatHistory(p.customer_jid, 'assistant', pesan);
+    console.log(`⏰ Konfirmasi jadwal ${nomor} dikirim ke ${p.customer_jid} (jam ${p.jam_datang}).`);
   }
 }
 
@@ -299,7 +314,7 @@ async function prosesSambutanCustomerBaru(jid, { kirimSapaan = false } = {}) {
   db.registerCustomer(jid);
 
   if (kirimSapaan) {
-    const sapaan = 'Sugeng rawuh di The Banjoemas Resto & Cafe 🙏 Mau mulai dari makan berat, atau nyemil dulu nih, Mas/Mbak?';
+    const sapaan = 'Sugeng rawuh di The Banjoemas Resto & Cafe 🙏 Mau dine in atau take away nih, Mas/Mbak? Terus udah di resto, atau mau datang jam berapa?';
     await kirimPesan(jid, sapaan);
     db.simpanChatHistory(jid, 'assistant', sapaan);
   }
@@ -372,12 +387,14 @@ async function kirimQrKeCustomer(pesananId, nominalTransfer) {
   const customer = db.getCustomer(pesanan.customer_jid);
   const items = db.getItemsByPesananId(pesananId);
 
+  const preOrder = !!pesanan.jam_datang && customer.status_kedatangan !== 'DI_RESTO';
   const pesanTotal = await ai.generatePesanTotalDanQr(
-    customer.nama,
+    [customer.sapaan, customer.nama].filter(Boolean).join(' ') || customer.nama,
     items,
     pesanan.subtotal,
     nominalTransfer,
-    pesanan.nomor_meja
+    pesanan.nomor_meja,
+    { nomorPesanan: nomorPesanan(pesanan), jamDatang: preOrder ? pesanan.jam_datang : null }
   );
 
   const qrPath = path.join(__dirname, 'images', 'qr', 'qris-statis.jpg');
@@ -396,7 +413,7 @@ async function kirimQrKeCustomer(pesananId, nominalTransfer) {
       image: fs.readFileSync(qrPath),
       caption: pesanTotal || `Totalnya ${rp(nominalTransfer)}. Scan QR ini ya, bayar persis segitu.`,
     });
-    console.log(`✅ QR + total terkirim ke ${customer.jid} untuk pesanan #${pesananId} (${rp(nominalTransfer)})`);
+    console.log(`✅ QR + total terkirim ke ${customer.jid} untuk pesanan ${nomorPesanan(pesanan)} (${rp(nominalTransfer)})`);
     return true;
   } catch (err) {
     console.error('❌ Gagal kirim QR:', err.message);
@@ -410,7 +427,7 @@ async function kirimQrKekuranganKeCustomer(tagihanId) {
   const jid = pesanan.customer_jid;
 
   const caption =
-    `Kekurangan bayar untuk pesanan #${pesanan.id}: ${rp(tagihan.nominal)}.\n` +
+    `Kekurangan bayar untuk pesanan ${nomorPesanan(pesanan)}: ${rp(tagihan.nominal)}.\n` +
     `Scan QR ini ya, bayar persis ${rp(tagihan.nominal_transfer)} 🙏`;
 
   const qrPath = path.join(__dirname, 'images', 'qr', 'qris-statis.jpg');
@@ -478,6 +495,7 @@ process.stdin.on('data', (data) => {
 // Timer didaftarkan SEKALI di luar startBot, supaya tidak menumpuk tiap reconnect
 setInterval(() => {
   cekTimeoutKeputusanHabis().catch((err) => console.error('❌ Error cek timeout:', err.message));
+  cekJadwalPreOrder().catch((err) => console.error('❌ Error cek jadwal pre-order:', err.message));
 }, 60 * 1000);
 
 if (!db.getInfoResto('aturan_layanan')) {

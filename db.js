@@ -1,6 +1,7 @@
 const Database = require('better-sqlite3');
 const path = require('path');
 require('dotenv').config();
+const { tanggalBot, menitSekarangBot, parseJam } = require('./format');
 
 const db = new Database(path.join(__dirname, 'resto-bot.db'));
 
@@ -176,6 +177,35 @@ tambahKolomJikaBelum('customers', 'fase_selesai', 'TEXT');             // JSON a
 tambahKolomJikaBelum('customers', 'alur_tutup', 'INTEGER DEFAULT 0');  // 1 = sudah bayar, pesanan berikutnya tanpa fase
 tambahKolomJikaBelum('customers', 'alur_updated_at', 'TEXT');
 
+// [Take away + pre-order + nomor pesanan harian]
+tambahKolomJikaBelum('customers', 'sapaan', 'TEXT');          // 'Mas' | 'Mbak', ditanya setelah nama
+tambahKolomJikaBelum('customers', 'tipe_default', 'TEXT');    // 'DINE_IN' | 'TAKE_AWAY' (default item baru)
+tambahKolomJikaBelum('customers', 'rencana_datang', 'TEXT');  // NULL = belum ditanya | 'SEKARANG' (sudah di resto) | 'HH:MM'
+tambahKolomJikaBelum('pesanan', 'tanggal', 'TEXT');           // YYYY-MM-DD zona bot, dasar reset nomor harian
+tambahKolomJikaBelum('pesanan', 'no_harian', 'INTEGER');      // nomor pesanan yang ditampilkan ("#007"), beda dari id
+tambahKolomJikaBelum('pesanan', 'jam_datang', 'TEXT');        // 'HH:MM' kalau customer pesan sebelum datang
+tambahKolomJikaBelum('pesanan', 'jadwal_status', 'TEXT');     // NULL | MENUNGGU | DITANYA | DIKONFIRMASI | BATAL (hanya pre-order yang sudah lunas)
+tambahKolomJikaBelum('pesanan_item', 'tipe', "TEXT DEFAULT 'DINE_IN'"); // 'DINE_IN' | 'TAKE_AWAY'
+
+// Backfill pesanan lama: tanggal (zona bot) dan nomor harian berurutan per tanggal
+{
+  const lama = db.prepare('SELECT id, created_at FROM pesanan WHERE tanggal IS NULL ORDER BY id').all();
+  const upd = db.prepare('UPDATE pesanan SET tanggal = ? WHERE id = ?');
+  for (const p of lama) {
+    const utc = new Date(`${String(p.created_at).replace(' ', 'T')}Z`);
+    upd.run(Number.isNaN(utc.getTime()) ? tanggalBot() : tanggalBot(utc), p.id);
+  }
+  const perlu = db.prepare('SELECT id, tanggal FROM pesanan WHERE no_harian IS NULL ORDER BY tanggal, id').all();
+  const hitung = new Map();
+  const updNo = db.prepare('UPDATE pesanan SET no_harian = ? WHERE id = ?');
+  for (const p of perlu) {
+    const terakhir = hitung.get(p.tanggal)
+      ?? db.prepare('SELECT COALESCE(MAX(no_harian), 0) AS n FROM pesanan WHERE tanggal = ?').get(p.tanggal).n;
+    hitung.set(p.tanggal, terakhir + 1);
+    updNo.run(terakhir + 1, p.id);
+  }
+}
+
 // Backfill pesanan lama yang sudah SELESAI (aman dijalankan berulang)
 db.exec(`
   UPDATE pesanan SET total_dibayar = COALESCE(subtotal, 0), paid_at = updated_at
@@ -290,6 +320,20 @@ function setCustomerNama(jid, nama) {
   db.prepare('UPDATE customers SET nama = ? WHERE jid = ?').run(nama, jid);
 }
 
+function setSapaan(jid, sapaan) {
+  getOrCreateCustomer(jid);
+  db.prepare('UPDATE customers SET sapaan = ? WHERE jid = ?').run(sapaan, jid);
+}
+
+// Layanan (dine in/take away) dan rencana kedatangan ('SEKARANG' atau 'HH:MM'). Salah satu boleh kosong.
+// alur_updated_at ikut diperbarui supaya state kemarin otomatis dianggap kunjungan lama (lihat getAlur).
+function setLayanan(jid, { tipe, rencana }) {
+  getOrCreateCustomer(jid);
+  if (tipe !== undefined) db.prepare('UPDATE customers SET tipe_default = ? WHERE jid = ?').run(tipe, jid);
+  if (rencana !== undefined) db.prepare('UPDATE customers SET rencana_datang = ? WHERE jid = ?').run(rencana, jid);
+  db.prepare('UPDATE customers SET alur_updated_at = ? WHERE jid = ?').run(new Date().toISOString(), jid);
+}
+
 // "Meja 05" / "meja 5" / " 5 " -> "5"; "a3" -> "A3"
 function normalisasiMeja(nomor) {
   if (nomor === null || nomor === undefined) return null;
@@ -345,8 +389,10 @@ function setAlur(jid, { jalur, selesai, tutup }) {
 }
 
 function resetAlur(jid) {
+  // Kunjungan baru: jalur, layanan, dan rencana kedatangan ditanya ulang. Nama & sapaan tetap diingat.
   db.prepare(`
-    UPDATE customers SET jalur = NULL, fase_selesai = NULL, alur_tutup = 0, alur_updated_at = NULL WHERE jid = ?
+    UPDATE customers SET jalur = NULL, fase_selesai = NULL, alur_tutup = 0, alur_updated_at = NULL,
+      tipe_default = NULL, rencana_datang = NULL WHERE jid = ?
   `).run(jid);
 }
 
@@ -549,26 +595,82 @@ function setMenuTersedia(id, tersedia) {
 
 // ========== PESANAN ==========
 
-function buatPesananBaru(customerJid, nomorMeja) {
-  const result = db.prepare(`
-    INSERT INTO pesanan (customer_jid, nomor_meja, status) VALUES (?, ?, 'DRAFT_MENUNGGU_KONFIRMASI')
-  `).run(customerJid, nomorMeja ?? null);
-  return result.lastInsertRowid;
+// Nomor pesanan harian: urut per tanggal (zona bot), mulai dari 1 tiap hari. Beda dari id (kunci internal).
+function buatPesananBaru(customerJid, nomorMeja, jamDatang = null) {
+  const tanggal = tanggalBot();
+  const buat = db.transaction(() => {
+    const n = db.prepare('SELECT COALESCE(MAX(no_harian), 0) + 1 AS n FROM pesanan WHERE tanggal = ?').get(tanggal).n;
+    return db.prepare(`
+      INSERT INTO pesanan (customer_jid, nomor_meja, status, tanggal, no_harian, jam_datang)
+      VALUES (?, ?, 'DRAFT_MENUNGGU_KONFIRMASI', ?, ?, ?)
+    `).run(customerJid, nomorMeja ?? null, tanggal, n, jamDatang ?? null).lastInsertRowid;
+  });
+  return buat();
 }
 
 function tambahItemPesanan(pesananId, item) {
   const hasil = db.prepare(`
     INSERT INTO pesanan_item
-      (pesanan_id, menu_id, varian_sku, nama_snapshot, qty, harga_satuan_snapshot, pilihan_terpilih, catatan)
+      (pesanan_id, menu_id, varian_sku, nama_snapshot, qty, harga_satuan_snapshot, pilihan_terpilih, catatan, tipe)
     VALUES
-      (@pesanan_id, @menu_id, @varian_sku, @nama_snapshot, @qty, @harga_satuan_snapshot, @pilihan_terpilih, @catatan)
+      (@pesanan_id, @menu_id, @varian_sku, @nama_snapshot, @qty, @harga_satuan_snapshot, @pilihan_terpilih, @catatan, @tipe)
   `).run({
     pesanan_id: pesananId,
     varian_sku: item.varian_sku ?? null,
     pilihan_terpilih: item.pilihan_terpilih ?? null,
+    tipe: item.tipe ?? 'DINE_IN',
     ...item,
   });
   return hasil.lastInsertRowid;
+}
+
+// Cari pesanan hari ini dari nomor yang ditampilkan ("#007" -> 7)
+function getPesananByNomorHarian(nomor, tanggal = tanggalBot()) {
+  const n = parseInt(String(nomor).replace(/\D/g, ''), 10);
+  if (!Number.isFinite(n)) return null;
+  return db.prepare('SELECT * FROM pesanan WHERE tanggal = ? AND no_harian = ?').get(tanggal, n) || null;
+}
+
+function setNomorMejaPesanan(id, nomorMeja) {
+  db.prepare('UPDATE pesanan SET nomor_meja = ? WHERE id = ?').run(nomorMeja, id);
+}
+
+function setJadwalPesanan(id, { jamDatang, jadwalStatus }) {
+  if (jamDatang !== undefined) db.prepare('UPDATE pesanan SET jam_datang = ? WHERE id = ?').run(jamDatang, id);
+  if (jadwalStatus !== undefined) db.prepare('UPDATE pesanan SET jadwal_status = ? WHERE id = ?').run(jadwalStatus, id);
+}
+
+// Pre-order yang sudah lunas dan masih punya jadwal berjalan, milik 1 customer (hari ini)
+function getPreOrderAktifByCustomer(customerJid) {
+  return db.prepare(`
+    SELECT * FROM pesanan
+    WHERE customer_jid = ? AND status = 'SELESAI' AND tanggal = ?
+      AND jadwal_status IN ('MENUNGGU', 'DITANYA', 'DIKONFIRMASI')
+    ORDER BY no_harian
+  `).all(customerJid, tanggalBot());
+}
+
+// Pre-order lunas yang sudah masuk jendela "30 menit sebelum datang" tapi belum ditanya,
+// dan customer-nya belum sampai di resto.
+function getPreOrderPerluDitanya(menitSebelum = 30) {
+  const sekarang = menitSekarangBot();
+  return db.prepare(`
+    SELECT p.*, c.nama, c.sapaan, c.status_kedatangan FROM pesanan p
+    JOIN customers c ON c.jid = p.customer_jid
+    WHERE p.status = 'SELESAI' AND p.jadwal_status = 'MENUNGGU' AND p.tanggal = ?
+      AND c.status_kedatangan != 'DI_RESTO'
+  `).all(tanggalBot()).filter((p) => {
+    const jam = parseJam(p.jam_datang);
+    return jam !== null && jam - sekarang <= menitSebelum;
+  });
+}
+
+function setTipeItemPesanan(itemId, tipe) {
+  db.prepare('UPDATE pesanan_item SET tipe = ? WHERE id = ?').run(tipe, itemId);
+}
+
+function setTipeSemuaItemAktif(pesananId, tipe) {
+  db.prepare(`UPDATE pesanan_item SET tipe = ? WHERE pesanan_id = ? AND status_item = 'AKTIF'`).run(tipe, pesananId);
 }
 
 function setQtyItemPesanan(itemId, qty) {
@@ -686,6 +788,16 @@ function getPesananMenungguBayar() {
     WHERE p.status = 'MENUNGGU_BAYAR'
     ORDER BY p.created_at ASC
   `).all();
+}
+
+// Pesanan yang sudah lunas hari ini (zona bot): dipakai kasir untuk lapor menu habis setelah bayar
+function getPesananLunasHariIni() {
+  return db.prepare(`
+    SELECT p.*, c.nama, c.nomor_meja AS nomor_meja_customer FROM pesanan p
+    JOIN customers c ON c.jid = p.customer_jid
+    WHERE p.status = 'SELESAI' AND p.tanggal = ?
+    ORDER BY p.no_harian
+  `).all(tanggalBot());
 }
 
 function getPesananAktifSemua() {
@@ -898,6 +1010,8 @@ module.exports = {
   setCustomerNama, setNomorMeja, getAllRegisteredCustomers, cariCustomer,
   normalisasiMeja, getPemakaiMeja, getCustomerDiMeja, kosongkanMejaCustomer,
   getAlur, setAlur, resetAlur, getKategoriByKelompok, setQtyItemPesanan,
+  setTipeItemPesanan, setTipeSemuaItemAktif, getPesananLunasHariIni, setNomorMejaPesanan,
+  setSapaan, setLayanan, getPesananByNomorHarian, setJadwalPesanan, getPreOrderAktifByCustomer, getPreOrderPerluDitanya,
   setStatusCs, getStatusCs, getAllCustomerEskalasi,
   upsertKategori, getAllKategori, getKategoriById,
   upsertMenu, upsertVarian, upsertPilihan,
