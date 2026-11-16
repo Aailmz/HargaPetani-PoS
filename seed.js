@@ -30,6 +30,7 @@ function main() {
       foto_path: kat.foto || null,
       foto_ilustrasi: !!kat.foto_ilustrasi,
       kartu_path: `kartu_kategori/${kat.id}.jpg`,
+      kelompok: kat.kelompok, // opsional: 'berat' | 'camilan' | 'kopi' | 'non_kopi', default ikut KELOMPOK_DEFAULT di db.js
     });
     jumlahKategori++;
   }

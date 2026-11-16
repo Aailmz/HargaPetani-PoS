@@ -234,7 +234,10 @@ function deteksiJenisMedia(isi) {
 async function handlePesanNonTeks(jid, jenisMedia) {
   if (db.isOperator(jid)) return;
 
-  if (!db.isCustomerRegistered(jid)) await prosesSambutanCustomerBaru(jid);
+  if (!db.isCustomerRegistered(jid)) {
+    await prosesSambutanCustomerBaru(jid, { kirimSapaan: true });
+    return;
+  }
   if (jenisMedia === 'stiker') return;
 
   const catatanUser = `[customer mengirim ${jenisMedia}]`;
@@ -287,29 +290,20 @@ async function handleCustomerMessage(jid, text) {
   await routeCustomerTerdaftar(jid, text);
 }
 
-async function kirimInfoMenuHabis(jid) {
-  const habis = db.getAllMenu().filter((m) => !m.tersedia).map((m) => m.nama);
-  if (habis.length === 0) return;
-  await kirimPesan(jid, `Info hari ini, menu yang sedang habis: ${habis.join(', ')}.`);
-}
-
-async function prosesSambutanCustomerBaru(jid) {
+// Customer baru: cukup didaftarkan. Sapaan "Sugeng rawuh" + pertanyaan "makan berat atau nyemil dulu"
+// dibuat oleh agent di balasan pertamanya (lihat buatKonteksDinamisCustomer), dan menu TIDAK dikirim
+// semua sekaligus, tapi per fase (alur 3 fase).
+// kirimSapaan=true dipakai kalau pesan pertama bukan teks (agent tidak jalan), jadi sapaan dikirim di sini.
+async function prosesSambutanCustomerBaru(jid, { kirimSapaan = false } = {}) {
   db.registerCustomer(jid);
 
-  const sambutan = await ai.callAiText(
-    `Ini pelanggan baru pertama kali chat ke The Banjoemas Resto & Cafe (resto khas Banyumas/Jawa Tengah). Buatkan SATU pesan sambutan singkat (maksimal 2-3 kalimat): mulai dengan "Sugeng rawuh", sedikit kalimat ramah tentang The Banjoemas (resto khas Banyumas, suasana hangat), lalu bilang menu akan dikirimkan. JANGAN tanya nama, jangan tanya data apapun, jangan tanya mau pesan apa dulu -- cukup sambutan + info menu segera dikirim. Panggil pelanggan "Mas/Mbak" secara umum (tidak tau nama).`,
-    300
-  );
+  if (kirimSapaan) {
+    const sapaan = 'Sugeng rawuh di The Banjoemas Resto & Cafe 🙏 Mau makan berat atau nyemil dulu, Mas/Mbak?';
+    await kirimPesan(jid, sapaan);
+    db.simpanChatHistory(jid, 'assistant', sapaan);
+  }
 
-  await kirimPesan(
-    jid,
-    sambutan || 'Sugeng rawuh Mas/Mbak di The Banjoemas Resto & Cafe 🙏 Monggo dilihat dulu menunya nggih, kami kirimkan sekarang.'
-  );
-
-  await kirimSemuaKartuKategori(jid);
-  await kirimInfoMenuHabis(jid);
-
-  console.log(`✅ Sambutan + menu terkirim ke customer baru: ${jid}`);
+  console.log(`✅ Customer baru terdaftar: ${jid}`);
 }
 
 async function routeCustomerTerdaftar(jid, text) {

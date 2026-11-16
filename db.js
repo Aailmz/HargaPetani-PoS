@@ -156,6 +156,26 @@ function tambahKolomJikaBelum(tabel, kolom, definisi) {
 tambahKolomJikaBelum('pesanan', 'total_dibayar', 'INTEGER DEFAULT 0'); // nominal riil yang diterima (tanpa kode unik)
 tambahKolomJikaBelum('pesanan', 'paid_at', 'TEXT');
 
+// [Alur 3 fase] Kelompok kategori: 'berat' | 'camilan' | 'kopi' | 'non_kopi' (kopi & non_kopi = fase minuman)
+tambahKolomJikaBelum('kategori', 'kelompok', 'TEXT');
+const KELOMPOK_DEFAULT = {
+  soto_sop: 'berat', nasi_mie: 'berat', tongseng_gulai: 'berat', sate_bakar: 'berat',
+  gorengan: 'camilan', rebusan_kukus: 'camilan', cimplung: 'camilan',
+  espresso_based: 'kopi', manual_brew: 'kopi', flavored_coffee: 'kopi',
+  non_coffee: 'non_kopi', flavored_tea: 'non_kopi', tradisional: 'non_kopi',
+  refreshments: 'non_kopi', jus_teh_air: 'non_kopi',
+};
+// Backfill kategori lama supaya tidak wajib seed ulang
+for (const [id, kelompok] of Object.entries(KELOMPOK_DEFAULT)) {
+  db.prepare('UPDATE kategori SET kelompok = ? WHERE id = ? AND kelompok IS NULL').run(kelompok, id);
+}
+
+// [Alur 3 fase] State alur per customer
+tambahKolomJikaBelum('customers', 'jalur', 'TEXT');                    // 'berat' | 'camilan' | NULL
+tambahKolomJikaBelum('customers', 'fase_selesai', 'TEXT');             // JSON array: ['camilan','minuman',...]
+tambahKolomJikaBelum('customers', 'alur_tutup', 'INTEGER DEFAULT 0');  // 1 = sudah bayar, pesanan berikutnya tanpa fase
+tambahKolomJikaBelum('customers', 'alur_updated_at', 'TEXT');
+
 // Backfill pesanan lama yang sudah SELESAI (aman dijalankan berulang)
 db.exec(`
   UPDATE pesanan SET total_dibayar = COALESCE(subtotal, 0), paid_at = updated_at
@@ -270,8 +290,69 @@ function setCustomerNama(jid, nama) {
   db.prepare('UPDATE customers SET nama = ? WHERE jid = ?').run(nama, jid);
 }
 
+// "Meja 05" / "meja 5" / " 5 " -> "5"; "a3" -> "A3"
+function normalisasiMeja(nomor) {
+  if (nomor === null || nomor === undefined) return null;
+  const n = String(nomor).trim().toUpperCase().replace(/^MEJA\s*/, '').replace(/\s+/g, '').replace(/^0+(?=\d)/, '');
+  return n || null;
+}
+
+// Customer lain yang sedang menempati meja ini (kunci meja per orang)
+function getPemakaiMeja(nomorMeja, kecualiJid = null) {
+  return db.prepare(`
+    SELECT * FROM customers
+    WHERE nomor_meja = ? AND status_kedatangan = 'DI_RESTO' AND jid != ?
+  `).get(normalisasiMeja(nomorMeja), kecualiJid ?? '');
+}
+
+function getCustomerDiMeja(nomorMeja) {
+  return db.prepare(`
+    SELECT * FROM customers WHERE nomor_meja = ? AND status_kedatangan = 'DI_RESTO'
+  `).all(normalisasiMeja(nomorMeja));
+}
+
+// Kosongkan meja customer + reset alur fase (kunjungan berikutnya mulai dari awal)
+function kosongkanMejaCustomer(jid) {
+  db.prepare(`
+    UPDATE customers SET nomor_meja = NULL, status_kedatangan = 'BELUM_SAMPAI' WHERE jid = ?
+  `).run(jid);
+  resetAlur(jid);
+}
+
+// ---------- ALUR 3 FASE ----------
+function hariIniLokal(iso) {
+  const d = iso ? new Date(iso) : new Date();
+  return d.toLocaleDateString('en-CA');
+}
+
+function getAlur(jid) {
+  const c = getOrCreateCustomer(jid);
+  // State dari hari sebelumnya dianggap kunjungan lama -> mulai dari awal
+  if (c.alur_updated_at && hariIniLokal(c.alur_updated_at) !== hariIniLokal()) {
+    resetAlur(jid);
+    return { jalur: null, selesai: [], tutup: false };
+  }
+  let selesai = [];
+  try { selesai = c.fase_selesai ? JSON.parse(c.fase_selesai) : []; } catch { selesai = []; }
+  return { jalur: c.jalur || null, selesai, tutup: !!c.alur_tutup };
+}
+
+function setAlur(jid, { jalur, selesai, tutup }) {
+  getOrCreateCustomer(jid);
+  db.prepare(`
+    UPDATE customers SET jalur = ?, fase_selesai = ?, alur_tutup = ?, alur_updated_at = ? WHERE jid = ?
+  `).run(jalur ?? null, JSON.stringify(selesai || []), tutup ? 1 : 0, new Date().toISOString(), jid);
+}
+
+function resetAlur(jid) {
+  db.prepare(`
+    UPDATE customers SET jalur = NULL, fase_selesai = NULL, alur_tutup = 0, alur_updated_at = NULL WHERE jid = ?
+  `).run(jid);
+}
+
 function setNomorMeja(jid, nomorMeja) {
   getOrCreateCustomer(jid);
+  nomorMeja = normalisasiMeja(nomorMeja);
   db.prepare(`
     UPDATE customers SET nomor_meja = ?, status_kedatangan = 'DI_RESTO' WHERE jid = ?
   `).run(nomorMeja, jid);
@@ -336,19 +417,27 @@ function lampirkanVarianDanPilihan(menu) {
 
 // ---------- KATEGORI ----------
 
-function upsertKategori({ id, nama, jenis, urutan, foto_path, foto_ilustrasi, kartu_path }) {
+function upsertKategori({ id, nama, jenis, urutan, foto_path, foto_ilustrasi, kartu_path, kelompok }) {
+  // kelompok dari menu.json kalau ada, kalau tidak pakai mapping default
+  const kel = kelompok ?? KELOMPOK_DEFAULT[id] ?? (jenis === 'minuman' ? 'non_kopi' : 'camilan');
   const existing = db.prepare('SELECT id FROM kategori WHERE id = ?').get(id);
   if (existing) {
     db.prepare(`
-      UPDATE kategori SET nama = ?, jenis = ?, urutan = ?, foto_path = ?, foto_ilustrasi = ?, kartu_path = ?
+      UPDATE kategori SET nama = ?, jenis = ?, urutan = ?, foto_path = ?, foto_ilustrasi = ?, kartu_path = ?, kelompok = ?
       WHERE id = ?
-    `).run(nama, jenis ?? null, urutan ?? 0, foto_path ?? null, foto_ilustrasi ? 1 : 0, kartu_path ?? null, id);
+    `).run(nama, jenis ?? null, urutan ?? 0, foto_path ?? null, foto_ilustrasi ? 1 : 0, kartu_path ?? null, kel, id);
   } else {
     db.prepare(`
-      INSERT INTO kategori (id, nama, jenis, urutan, foto_path, foto_ilustrasi, kartu_path)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(id, nama, jenis ?? null, urutan ?? 0, foto_path ?? null, foto_ilustrasi ? 1 : 0, kartu_path ?? null);
+      INSERT INTO kategori (id, nama, jenis, urutan, foto_path, foto_ilustrasi, kartu_path, kelompok)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(id, nama, jenis ?? null, urutan ?? 0, foto_path ?? null, foto_ilustrasi ? 1 : 0, kartu_path ?? null, kel);
   }
+}
+
+// kelompok: 'berat' | 'camilan' | 'kopi' | 'non_kopi' | 'minuman' (= kopi + non_kopi)
+function getKategoriByKelompok(kelompok) {
+  const daftar = kelompok === 'minuman' ? ['kopi', 'non_kopi'] : [kelompok];
+  return getAllKategori().filter((k) => daftar.includes(k.kelompok));
 }
 
 function getAllKategori() {
@@ -836,6 +925,8 @@ module.exports = {
   isOperator, isOperatorUtama, tambahOperator, hapusOperator, getAllOperators,
   getOrCreateCustomer, getCustomer, isCustomerRegistered, registerCustomer,
   setCustomerNama, setNomorMeja, getAllRegisteredCustomers, cariCustomer,
+  normalisasiMeja, getPemakaiMeja, getCustomerDiMeja, kosongkanMejaCustomer,
+  getAlur, setAlur, resetAlur, getKategoriByKelompok,
   setStatusCs, getStatusCs, getAllCustomerEskalasi,
   upsertKategori, getAllKategori, getKategoriById,
   upsertMenu, upsertVarian, upsertPilihan,
