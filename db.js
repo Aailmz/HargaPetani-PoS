@@ -571,6 +571,10 @@ function tambahItemPesanan(pesananId, item) {
   return hasil.lastInsertRowid;
 }
 
+function setQtyItemPesanan(itemId, qty) {
+  db.prepare('UPDATE pesanan_item SET qty = ? WHERE id = ?').run(qty, itemId);
+}
+
 function getPesananById(id) {
   return db.prepare('SELECT * FROM pesanan WHERE id = ?').get(id);
 }
@@ -926,7 +930,7 @@ module.exports = {
   getOrCreateCustomer, getCustomer, isCustomerRegistered, registerCustomer,
   setCustomerNama, setNomorMeja, getAllRegisteredCustomers, cariCustomer,
   normalisasiMeja, getPemakaiMeja, getCustomerDiMeja, kosongkanMejaCustomer,
-  getAlur, setAlur, resetAlur, getKategoriByKelompok,
+  getAlur, setAlur, resetAlur, getKategoriByKelompok, setQtyItemPesanan,
   setStatusCs, getStatusCs, getAllCustomerEskalasi,
   upsertKategori, getAllKategori, getKategoriById,
   upsertMenu, upsertVarian, upsertPilihan,

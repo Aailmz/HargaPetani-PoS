@@ -80,21 +80,29 @@ async function tawarkanFaseBerikutnya(konteks, { kirimKartu = false } = {}) {
   }
 
   // Fase berikutnya: UPSELL dulu, JANGAN kirim kartu. Kartu baru dikirim (lihat_menu) kalau customer tertarik.
+  // Minuman: JANGAN sebut nama menu spesifik. Pertanyaannya "kopi / non-kopi / dua-duanya", jadi
+  // menyebut 1 minuman (apalagi non-kopi) sambil nanya itu malah membingungkan.
+  if (fase === 'minuman') {
+    return {
+      fase_ditawarkan: 'minuman',
+      instruksi_alur: 'Di bawah ringkasan, 1 kalimat UPSELL minuman yang menggoda dan nyambung dengan pesanannya (misal "enaknya ditemani minuman hangat"), TANPA menyebut nama minuman tertentu, lalu tanya mau kopi, non-kopi, atau dua-duanya. Kalau customer jawab kelompok ("non kopi", "kopi", "dua-duanya") -> lihat_menu dengan kelompok "non_kopi" / "kopi" / "minuman". Kalau customer langsung sebut nama minuman -> buat_order.',
+    };
+  }
+
   return {
     fase_ditawarkan: fase,
     rekomendasi_upsell: rekomendasiUpsell(fase),
-    instruksi_alur: fase === 'minuman'
-      ? 'Di bawah ringkasan, UPSELL minuman dalam 1 kalimat yang menggoda (boleh sebut 1 rekomendasi dari rekomendasi_upsell yang cocok dengan pesanannya), lalu tanya mau kopi, non-kopi, atau dua-duanya. Kalau customer jawab kelompok ("non kopi", "kopi", "dua-duanya") -> panggil lihat_menu dengan kelompok "non_kopi" / "kopi" / "minuman", JANGAN buat_order. Kalau customer langsung sebut nama minuman -> buat_order.'
-      : `Di bawah ringkasan, UPSELL ${LABEL_FASE[fase]} dalam 1 kalimat yang menggoda (sebut 1 rekomendasi dari rekomendasi_upsell yang cocok dengan pesanannya), tanya mau sekalian atau nggak. JANGAN kirim menu dulu. Kalau customer tertarik tapi belum sebut menu -> lihat_menu kelompok "${fase}". Kalau setuju menu yang direkomendasikan -> buat_order. Kalau nolak -> lewati_fase.`,
+    instruksi_alur: `Di bawah ringkasan, UPSELL ${LABEL_FASE[fase]} dalam 1 kalimat yang menggoda: sebut 1 menu dari rekomendasi_upsell, lalu tanya mau sekalian atau nggak. JANGAN kirim menu dulu. Kalau customer tertarik tapi belum sebut menu -> lihat_menu kelompok "${fase}". Kalau setuju menu yang direkomendasikan -> buat_order. Kalau nolak -> lewati_fase.`,
   };
 }
 
-// 2-3 menu andalan yang tersedia dari fase itu, buat bahan upsell
+// 2 menu dari fase itu buat bahan upsell: andalan dulu, diacak biar tidak monoton
 function rekomendasiUpsell(fase) {
   const idKat = db.getKategoriByKelompok(fase).map((k) => k.id);
   const tersedia = db.getMenuTersedia().filter((m) => idKat.includes(m.kategori_id));
   const andalan = tersedia.filter((m) => m.andalan);
-  return (andalan.length > 0 ? andalan : tersedia).slice(0, 3)
+  const sumber = [...(andalan.length >= 2 ? andalan : tersedia)].sort(() => Math.random() - 0.5);
+  return sumber.slice(0, 2)
     .map((m) => `${m.nama} (Rp${m.varian[0]?.harga ?? '-'}${m.deskripsi ? `, ${String(m.deskripsi).slice(0, 80)}` : ''})`);
 }
 
@@ -445,6 +453,21 @@ const TOOLS_CUSTOMER = [
   {
     type: 'function',
     function: {
+      name: 'ubah_jumlah_item',
+      description: 'Ubah jumlah TOTAL menu yang SUDAH ada di draft pesanan. Dipakai kalau customer bilang jumlah akhirnya, misal "2 deh cimplung ubinya", "jadi 3 aja", "yang tadi 2 ya", "kurangi jadi 1". JANGAN pakai buat_order untuk ini, karena buat_order MENAMBAH jumlah (bukan mengganti). Kalau customer bilang "tambah 1 lagi" -> tetap buat_order. Kalau mau 0 / dihapus -> hapus_item_order.',
+      parameters: {
+        type: 'object',
+        properties: {
+          nama_menu: { type: 'string', description: 'Nama menu yang jumlahnya diubah, sesuai yang disebut customer.' },
+          jumlah: { type: 'integer', description: 'Jumlah TOTAL akhir yang diinginkan (bukan selisih), minimal 1.' },
+        },
+        required: ['nama_menu', 'jumlah'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'pilih_jalur',
       description: 'Catat pilihan customer mau mulai dari makan berat atau nyemil, lalu kirim kartu menu fase pertamanya. Dipakai begitu customer menjawab pertanyaan "makan berat atau nyemil dulu" (atau bilang hal serupa: "laper banget", "mau ngopi santai", dll).',
       parameters: {
@@ -771,7 +794,8 @@ ALUR PESAN 3 FASE (supaya customer tidak dibanjiri semua menu):
 CARA KERJA:
 - Tanya menu / minta lihat menu / minta foto-pdf menu -> panggil lihat_menu (utamakan kelompok fase saat ini, semua kartu hanya kalau customer eksplisit minta semua menu).
 - Tanya hal spesifik soal 1/beberapa menu (bahan, pedas, alergi, cocok buat siapa, dll) -> panggil tanya_detail_menu, lalu jawab dari deskripsi yang didapat dengan gaya ngobrol, bukan baca manual.
-- Sebut menu + jumlah mau dipesan -> panggil buat_order.
+- Sebut menu + jumlah mau dipesan -> panggil buat_order (ini MENAMBAH ke draft).
+- Customer mengubah jumlah menu yang SUDAH ada di draft ("2 deh cimplung ubinya", "jadi 3 aja", "yang tadi 2 ya") -> panggil ubah_jumlah_item dengan jumlah TOTAL akhirnya, BUKAN buat_order. "Tambah 1 lagi" -> buat_order.
 - Kalau ada menu yang ambigu (banyak varian cocok) dari hasil buat_order, tampilkan pilihan dengan format angka, tunggu jawaban customer, lalu panggil jawab_klarifikasi_menu.
 - Kalau ada item yang butuh pilih porsi (penuh/setengah) atau opsi wajib (misal suhu panas/dingin) dari hasil buat_order, tampilkan pilihannya dengan format angka, tunggu jawaban customer, lalu panggil jawab_pilihan_menu. Jangan campur pertanyaan ini dengan pertanyaan klarifikasi nama menu dalam satu waktu kalau bisa dihindari, tapi kalau kebetulan dua-duanya ada, boleh ditanya sekaligus asal jelas mana untuk menu apa.
 - Rincian (tampilkan_rincian_order) dan kirim QR (kirim_qr_pembayaran) WAJIB dua giliran terpisah: tampilkan rincian dulu, tunggu customer setuju ("ya", "oke", "kirim"), baru kirim QR.
@@ -1118,15 +1142,29 @@ async function eksekusiBuatOrder({ teks_mentah }, konteks) {
 
   for (const item of hasilParse.items) {
     const labelVarian = item.varian.label && item.varian.label !== 'Reguler' ? ` (${item.varian.label})` : '';
+    const pilihanJson = Object.keys(item.pilihanTerisi || {}).length > 0 ? JSON.stringify(item.pilihanTerisi) : null;
+
+    // Item yang sama persis (menu, porsi, opsi, catatan) sudah ada di draft -> tambah jumlahnya,
+    // jangan bikin baris kembar ("Cimplung Ubi x1" + "Cimplung Ubi x2")
+    const sudahAda = db.getItemsByPesananId(pesananId).find((i) =>
+      i.status_item === 'AKTIF'
+      && i.menu_id === item.menu.id
+      && (i.varian_sku ?? null) === (item.varian.sku ?? null)
+      && (i.pilihan_terpilih ?? null) === pilihanJson
+      && (i.catatan ?? null) === (item.catatan || null)
+    );
+    if (sudahAda) {
+      db.setQtyItemPesanan(sudahAda.id, sudahAda.qty + item.qty);
+      continue;
+    }
+
     db.tambahItemPesanan(pesananId, {
       menu_id: item.menu.id,
       varian_sku: item.varian.sku,
       nama_snapshot: `${item.menu.nama}${labelVarian}`,
       qty: item.qty,
       harga_satuan_snapshot: item.varian.harga,
-      pilihan_terpilih: Object.keys(item.pilihanTerisi || {}).length > 0
-        ? JSON.stringify(item.pilihanTerisi)
-        : null,
+      pilihan_terpilih: pilihanJson,
       catatan: item.catatan || null,
     });
   }
@@ -1191,10 +1229,14 @@ async function eksekusiJawabKlarifikasiMenu({ teks_jawaban }, konteks) {
 
   clearKlarifikasiPending(konteks.jid);
 
+  // Teks siap pakai: nama resmi persis + qty, supaya buat_order berikutnya langsung cocok (tidak ambigu lagi)
+  const teksOrderLengkap = hasilCocok.map((h) => `${h.qty} ${h.menu.nama}`).join(', ');
+
   return {
     sukses: true,
     menu_terpilih: hasilCocok.map((h) => `${h.menu.nama} x${h.qty}`),
-    catatan_untuk_ai: 'Menu sudah berhasil dicocokkan. Panggil tool buat_order lagi dengan teks yang menyebutkan nama SPESIFIK hasil pilihan ini.',
+    teks_order_lengkap: teksOrderLengkap,
+    catatan_untuk_ai: `Menu sudah berhasil dicocokkan. Panggil buat_order SEKARANG dengan teks_mentah persis: "${teksOrderLengkap}" (jangan diubah, jangan tambah harga).`,
   };
 }
 
@@ -1785,6 +1827,62 @@ async function eksekusiKonfirmasiKedatangan({ nomor_meja }, konteks) {
   return { sukses: true, nomor_meja: meja };
 }
 
+async function eksekusiUbahJumlahItem({ nama_menu, jumlah }, konteks) {
+  const draft = db.getDraftAtauMenungguBayarByCustomer(konteks.jid);
+  if (!draft) return { sukses: false, pesan: 'Tidak ada draft pesanan aktif saat ini.' };
+
+  const qty = Math.floor(Number(jumlah));
+  if (!Number.isFinite(qty) || qty < 1) {
+    return { sukses: false, pesan: 'Jumlah minimal 1. Kalau mau dihapus pakai hapus_item_order.' };
+  }
+
+  const items = db.getItemsByPesananId(draft.id).filter((i) => i.status_item === 'AKTIF');
+  const match = cariKandidatMenu(nama_menu);
+  const idMenuCocok = match.kandidatList
+    ? match.kandidatList.map((m) => m.id)
+    : match.kandidatTerbaik ? [match.kandidatTerbaik.id] : [];
+  const cocok = items.filter((i) => idMenuCocok.includes(i.menu_id));
+
+  if (cocok.length === 0) {
+    return { sukses: false, pesan: `Tidak ketemu "${nama_menu}" di draft pesanan saat ini.`, catatan_untuk_ai: 'Kalau customer sebenarnya mau MEMESAN menu itu (belum ada di draft), pakai buat_order.' };
+  }
+  if (cocok.length > 1) {
+    return {
+      sukses: false,
+      perlu_pilih: cocok.map((i) => `${i.nama_snapshot} x${i.qty}`),
+      catatan_untuk_ai: 'Ada lebih dari 1 baris yang cocok (beda porsi/opsi). Tanya customer yang mana (format angka).',
+    };
+  }
+
+  const item = cocok[0];
+  const qtyLama = item.qty;
+  db.setQtyItemPesanan(item.id, qty);
+  db.hitungUlangSubtotalAktif(draft.id);
+  db.setHargaFixPesanan(draft.id, null);
+
+  const qrLamaJadiInvalid = draft.status === 'MENUNGGU_BAYAR';
+  if (qrLamaJadiInvalid) db.setStatusPesanan(draft.id, 'DRAFT_MENUNGGU_KONFIRMASI');
+
+  const semua = db.getItemsByPesananId(draft.id).filter((i) => i.status_item === 'AKTIF');
+  const alur = db.getAlur(konteks.jid);
+  const faseMenunggu = alur.tutup ? null : faseBerikutnya(alur);
+
+  return {
+    sukses: true,
+    menu: item.nama_snapshot,
+    jumlah_lama: qtyLama,
+    jumlah_baru: qty,
+    items_total_di_draft: semua.map((i) => `${i.nama_snapshot} x${i.qty}${i.catatan ? ` (${i.catatan})` : ''}`),
+    qr_sebelumnya_invalid: qrLamaJadiInvalid || undefined,
+    fase_menunggu_jawaban: faseMenunggu ? LABEL_FASE[faseMenunggu] : undefined,
+    catatan_untuk_ai: (qrLamaJadiInvalid ? 'PENTING: QR lama TIDAK BERLAKU LAGI karena jumlah berubah, ingatkan singkat jangan bayar pakai QR lama. ' : '')
+      + 'Format balasan: "Pesanan sementara:" lalu ringkasan SEMUA item (items_total_di_draft) format angka tanpa harga. '
+      + (faseMenunggu
+        ? `Di bawahnya 1 kalimat pendek yang mengingatkan tawaran ${LABEL_FASE[faseMenunggu]} yang masih menunggu jawaban (jangan ulang rekomendasi yang sama persis, jangan kirim menu).`
+        : 'Di bawahnya 1 kalimat pendek lanjut ke rincian.'),
+  };
+}
+
 async function eksekusiPilihJalur({ jalur }, konteks) {
   if (!URUTAN_JALUR[jalur]) return { sukses: false, pesan: `Jalur "${jalur}" tidak dikenal.` };
   const alur = db.getAlur(konteks.jid);
@@ -1863,6 +1961,7 @@ const EKSEKUTOR_CUSTOMER = {
   konfirmasi_kedatangan: eksekusiKonfirmasiKedatangan,
   forward_pesan_ke_kasir: eksekusiForwardPesanKeKasir,
   kirim_qr_kekurangan: eksekusiKirimQrKekurangan,
+  ubah_jumlah_item: eksekusiUbahJumlahItem,
   pilih_jalur: eksekusiPilihJalur,
   lewati_fase: eksekusiLewatiFase,
   simpan_nama: eksekusiSimpanNama,
@@ -2112,6 +2211,13 @@ async function eksekusiBroadcastPromo({ mode, nama_menu }, konteks) {
     const match = cariKandidatMenu(nama_menu);
     if (match.statusMatch === 'TIDAK_ADA') {
       return { sukses: false, pesan: `Menu "${nama_menu}" tidak ditemukan.` };
+    }
+    if (match.statusMatch === 'AMBIGU_MULTI') {
+      return {
+        sukses: false,
+        pesan: `"${nama_menu}" cocok ke beberapa menu: ${match.kandidatList.map((m) => m.nama).join(', ')}.`,
+        catatan_untuk_ai: 'Tanya kasir menu yang mana (format angka).',
+      };
     }
     menuTerpilih = [match.kandidatTerbaik];
   } else {

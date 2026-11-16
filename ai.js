@@ -285,6 +285,18 @@ async function prosesOrderCustomer(pesanCustomer) {
       continue;
     }
 
+    // Dua kandidat sama-sama kuat (misal "ubi" -> Ubi Goreng / Cimplung Ubi): itu ambigu beneran, bukan typo.
+    // Tanya customer, jangan biarkan AI menebak.
+    if (matchResult.statusMatch === 'AMBIGU' && matchResult.kandidatKedua && matchResult.skorKedua >= 0.8) {
+      hasil.perluKlarifikasi.push({
+        namaInput: item.nama,
+        qty: item.qty || 1,
+        catatan: item.catatan || null,
+        kandidatList: [matchResult.kandidatTerbaik, matchResult.kandidatKedua],
+      });
+      continue;
+    }
+
     let menuFinal = null;
 
     if (matchResult.statusMatch === 'YAKIN') {

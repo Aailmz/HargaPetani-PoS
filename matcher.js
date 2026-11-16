@@ -58,13 +58,24 @@ function hitungSkorGabungan(a, b) {
  * Return: { kandidatTerbaik, skorTerbaik, kandidatKedua, skorKedua, statusMatch }
  * statusMatch: 'YAKIN' | 'AMBIGU' | 'AMBIGU_MULTI' | 'TIDAK_ADA'
  */
-// Buang qty/harga yang kadang ikut kebawa AI ke teks: "Cimplung Ubi x1", "1 Cimplung Ubi", "Cimplung Ubi Rp33000"
+// Kata sapaan/basa-basi yang sering ikut kebawa ke nama menu: "2 deh cimplung ubinya", "mau cimplung ubi dong"
+// (sudah dicek: tidak ada yang jadi bagian nama/alias menu mana pun di menu.json)
+const KATA_BASA_BASI = new Set([
+  'deh', 'dong', 'aja', 'saja', 'ya', 'yaa', 'nih', 'sih', 'lah', 'kak', 'mas', 'mbak', 'mba',
+  'tolong', 'mau', 'pesen', 'pesan', 'order', 'tambah', 'lagi', 'minta',
+]);
+
+// Buang qty/harga/basa-basi yang kadang ikut kebawa AI ke teks:
+// "Cimplung Ubi x1", "1 Cimplung Ubi", "Cimplung Ubi Rp33000", "2 deh cimplung ubinya"
 function bersihkanInput(namaInput) {
   return normalisasiNama(String(namaInput || ''))
     .replace(/\brp\s?\d+\b/g, '')
     .replace(/\bx\s?\d+\b|\b\d+\s?x\b/g, '')
-    .replace(/^\d+\s+/, '')
-    .replace(/\s+/g, ' ')
+    .split(' ')
+    .filter((t) => t && !KATA_BASA_BASI.has(t))
+    .map((t) => (t.length > 4 && t.endsWith('nya') ? t.slice(0, -3) : t)) // "ubinya" -> "ubi"
+    .join(' ')
+    .replace(/^\d+\s+/, '') // qty di depan ("2 cimplung ubi"); angka di tengah/akhir tetap (alias "v 60")
     .trim();
 }
 
