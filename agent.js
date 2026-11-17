@@ -2,7 +2,7 @@ const OpenAI = require('openai');
 const db = require('./db');
 const { rp, nomorPesanan, menitSekarangBot, parseJam, formatJam } = require('./format');
 const ai = require('./ai');
-const { cariKandidatMenu, cariMenuBernamaUmum } = require('./matcher');
+const { cariKandidatMenu, cariMenuBernamaUmum, normalisasiNama } = require('./matcher');
 
 const client = new OpenAI({
   apiKey: process.env.AI_API_KEY,
@@ -191,14 +191,14 @@ function buatKonteksDinamisCustomer(jid) {
     const ket = draft.status === 'MENUNGGU_BAYAR'
       ? 'QR sudah dikirim, menunggu pembayaran'
       : draft.subtotal
-        ? 'rincian sudah ditampilkan, menunggu konfirmasi customer untuk kirim QR'
+        ? 'rincian SUDAH ditampilkan, menunggu persetujuan customer. Kalau customer setuju (ok, ya, lanjut, kirim) -> WAJIB panggil kirim_qr_pembayaran sekarang; JANGAN panggil tampilkan_rincian_order lagi dan JANGAN meneruskan ke kasir'
         : 'masih draft, rincian belum ditampilkan';
     baris.push(`- Pesanan ${nomorPesanan(draft)}: ${ket}.`);
   }
 
   const rekomendasi = db.getPendingState(jid, 'rekomendasi');
   if (rekomendasi && rekomendasi.length > 0) {
-    baris.push(`- Baru saja merekomendasikan menu: ${rekomendasi.map((n, i) => `${i + 1}. ${n}`).join(', ')}. Kalau customer membalas dengan angka atau nama dari daftar itu, WAJIB langsung panggil buat_order (teks_mentah = nama menunya) di giliran yang SAMA. JANGAN hanya membalas teks "siap/mantap" tanpa memanggil tool, karena pesanannya tidak akan tercatat.`);
+    baris.push(`- Baru saja merekomendasikan menu: ${rekomendasi.map((n, i) => `${i + 1}. ${n}`).join(', ')}. Kalau customer membalas dengan angka atau nama dari daftar itu, WAJIB langsung panggil buat_order (teks_mentah = nama menunya) di giliran yang SAMA. JANGAN hanya membalas teks "siap/mantap" tanpa memanggil tool, karena pesanannya tidak akan tercatat. Kalau customer membalas hal yang AMBIGU (misal "yg lain deh", "apa aja", "terserah"), JANGAN panggil tool dan JANGAN menyimpulkan menunya cuma segini: TANYA dulu maksudnya dengan DAFTAR BERNOMOR (lihat semua / pilih kategori / rekomendasi lain).`);
   }
 
   const habis = db.getItemMenungguKeputusanHabisByCustomer(jid);
@@ -898,6 +898,7 @@ FORMAT PILIHAN (WAJIB):
 - Setiap kali customer harus memilih di antara 2 atau lebih opsi (kedatangan, makan berat/nyemil, kopi/non-kopi, tambah/lanjut, Mas/Mbak, panas/dingin, varian menu, dll), tampilkan sebagai DAFTAR BERNOMOR: 1 kalimat tanya pendek, lalu satu opsi per baris ("1. ...", "2. ..."). JANGAN menaruh pilihan di dalam paragraf, karena sulit dibaca. Tujuannya customer cukup membalas SATU kata atau satu angka.
 - Kalau customer membalas dengan angka ("2") atau satu kata, artikan sesuai daftar yang kamu kirim di pesan sebelumnya.
 - Balasan customer atas daftar pilihan HARUS memicu tool yang sesuai di giliran yang SAMA (pilih_jalur, lihat_menu, buat_order, simpan_nama, atur_layanan, lewati_fase). JANGAN hanya membalas teks konfirmasi ("siap", "mantap") tanpa memanggil tool, karena pilihannya tidak akan tercatat.
+- JAWABAN AMBIGU: kalau maksud customer tidak jelas (misal "yg lain deh", "yang lain", "apa aja", "terserah", "yang itu"), JANGAN langsung memanggil tool dan JANGAN menebak. Tanya dulu dengan DAFTAR BERNOMOR (maks 4 opsi) apa yang dimaksud, baru panggil tool setelah jelas. Contoh setelah rekomendasi, customer bilang "yg lain deh": tanya "Mau lihat yang mana?" 1. Semua menu makan berat (kartu), 2. Pilih kategori (Sate/Goreng/Bakar, Nasi & Mie, ...), 3. Rekomendasi lain. Menu andalan hanya sebagian kecil dari seluruh menu, jangan pernah bilang "cuma ini yang tersedia".
 - Kalau customer tanya favorit / rekomendasi / "enaknya apa" -> JAWAB dulu lewat rekomendasi_menu (jangan balik bertanya soal fase). Tampilkan 3-4 menu sebagai daftar bernomor dengan harga, lalu tanya mau yang mana (cukup balas nomor).
 
 TAKE AWAY, PRE-ORDER, DAN NOMOR PESANAN:
@@ -981,6 +982,19 @@ ATURAN PENULISAN WAJIB (PELANGGARAN = FATAL):
 // ========== ORKESTRATOR (identik pola dengan contoh) ==========
 
 // Klaim berisiko tinggi yang tidak boleh keluar tanpa tool-nya benar-benar berhasil: customer akan menunggu/membayar.
+// Apakah pesan customer menyebut nama/alias menu yang ada (dipakai untuk memastikan klaim "sudah dicatat" memang soal menu)
+function pesanMenyebutMenu(pesan) {
+  const t = ' ' + normalisasiNama(String(pesan || '')) + ' ';
+  if (t.trim().length < 3) return false;
+  for (const m of db.getAllMenu()) {
+    for (const n of [m.nama, ...(m.alias || [])]) {
+      const nn = normalisasiNama(n);
+      if (nn.length >= 4 && t.includes(' ' + nn + ' ')) return true;
+    }
+  }
+  return false;
+}
+
 const KLAIM_BERISIKO = [
   {
     klaim: 'QR pembayaran sudah dikirim',
@@ -1002,6 +1016,25 @@ const KLAIM_BERISIKO = [
     re: /\bmeja\b[^.\n]{0,30}\b(sudah|udah)\b[^.\n]{0,20}\b(dikosongkan|kosong|bisa dipakai)\b/i,
     tool: ['selesaikan_meja'],
     hanyaJika: (pesanUser) => /\bmeja\b[^.\n]{0,25}\b(kelar|kosong|selesai)\b|\b(kelar|kosongkan)\b[^.\n]{0,15}\bmeja\b/i.test(pesanUser) && !/\?/.test(pesanUser),
+  },
+  // AI menulis daftar "Pesanan sementara:" dari ingatan percakapan padahal menu itu tidak pernah masuk draft (buat_order tidak dipanggil).
+  {
+    klaim: 'daftar pesanan sementara',
+    re: /pesanan sementara\s*:/i,
+    tool: ['buat_order', 'ubah_jumlah_item', 'hapus_item_order', 'ubah_tipe_item', 'cek_status_order_saya', 'tampilkan_rincian_order', 'cek_status_order'],
+  },
+  // Rincian ditulis tanpa memanggil tampilkan_rincian_order: harga dan total jadi karangan atau kosong.
+  {
+    klaim: 'rincian pesanan',
+    re: /rincian pesanan\b[^\n]{0,15}:/i,
+    tool: ['tampilkan_rincian_order', 'cek_status_order_saya', 'cek_status_order'],
+  },
+  // Customer menyebut menu, AI membalas "sudah dicatat" tanpa memanggil tool yang menyimpan.
+  {
+    klaim: 'menu sudah dicatat ke pesanan',
+    re: /\b(sudah|udah|telah)\b[^.\n]{0,20}\b(dicatat|tercatat|dimasukkan|ditambahkan|kucatat|kutambah(kan)?)\b|\b(aku|saya)\b[^.\n]{0,15}\b(catat|tambah(kan)?|masukin|masukkan)\b/i,
+    tool: ['buat_order', 'ubah_jumlah_item', 'hapus_item_order', 'ubah_tipe_item', 'forward_pesan_ke_kasir', 'jawab_pilihan_menu'],
+    hanyaJika: (pesanUser) => pesanMenyebutMenu(pesanUser) && !/\?/.test(pesanUser),
   },
   // Customer bilang batal / tidak jadi datang, AI membalas "pesanan aku batalkan" tanpa tool: status tidak berubah dan staf tidak tahu.
   {
@@ -1067,7 +1100,7 @@ async function jalankanAgent({ systemPrompt, tools, historiChat, pesanBaru, ekse
         });
         continue;
       }
-      return { jawabanFinal: pesanAi.content, error: null };
+      return { jawabanFinal: pesanAi.content, error: null, toolBerhasil: [...toolBerhasil] };
     }
 
     for (const toolCall of pesanAi.tool_calls) {
@@ -1608,6 +1641,13 @@ async function eksekusiTampilkanRincianOrder(_, konteks) {
   }
 
   const items = db.getItemsByPesananId(draft.id).filter((i) => i.status_item === 'AKTIF');
+  if (items.length === 0) {
+    return {
+      sukses: false,
+      pesan: 'Pesanan masih KOSONG: belum ada satu pun menu yang tercatat di sistem.',
+      catatan_untuk_ai: 'JANGAN menulis rincian dari ingatan percakapan. Bilang jujur bahwa belum ada menu yang tercatat, lalu tanya customer mau pesan apa (atau panggil buat_order kalau dia baru saja menyebut menu).',
+    };
+  }
   const subtotal = items.reduce((sum, i) => sum + i.harga_satuan_snapshot * i.qty, 0);
   db.setHargaFixPesanan(draft.id, subtotal);
 
@@ -2361,10 +2401,58 @@ function tangkapJawabanSapaan(jid, pesan, histori) {
 // Dipanggil SESUDAH agent menjawab, sebelum dikirim ke customer. Dua hal yang tidak boleh bergantung pada kepatuhan AI:
 // 1. Sapaan belum dijawab -> "Mas Budi"/"Mbak Sari" (tebakan dari nama) diubah jadi nama saja.
 // 2. Sapaan pertama ke customer baru wajib memuat daftar pilihan kedatangan.
-function rapikanBalasanCustomer(jid, teks, { pertama = false } = {}) {
+// Ganti blok "Pesanan sementara:" / "Rincian pesanan ...:" yang ditulis AI dengan versi dari DB, supaya yang dilihat customer
+// selalu sama dengan yang benar-benar tercatat (AI kadang menulisnya dari ingatan percakapan).
+function selaraskanDaftarPesanan(jid, teks, { rincianDitampilkan = false } = {}) {
+  const baris = String(teks).split('\n');
+  const draft = db.getDraftAtauMenungguBayarByCustomer(jid);
+  const items = draft ? db.getItemsByPesananId(draft.id).filter((i) => i.status_item === 'AKTIF') : [];
+  const total = items.reduce((sum, i) => sum + i.harga_satuan_snapshot * i.qty, 0);
+
+  const barisRincian = (i, n) => {
+    const pilihan = db.pilihanTampil(i);
+    const infoPilihan = Object.keys(pilihan).length > 0 ? ' (' + Object.values(pilihan).join(', ') + ')' : '';
+    const tipe = i.tipe === 'TAKE_AWAY' ? ' [take away]' : '';
+    return (n + 1) + '. ' + i.nama_snapshot + infoPilihan + tipe + ' x' + i.qty + ' @ ' + rp(i.harga_satuan_snapshot) + ' = ' + rp(i.harga_satuan_snapshot * i.qty);
+  };
+
+  const idx = baris.findIndex((l) => /^\s*(pesanan sementara|rincian pesanan)\b[^\n]*:\s*$/i.test(l));
+  if (idx < 0) {
+    // Tidak ada blok, tapi rincian baru saja dipanggil dan balasan tidak memuat totalnya: sisipkan blok dari DB
+    if (rincianDitampilkan && draft && items.length > 0 && !String(teks).includes(rp(total))) {
+      const blok = ['Rincian pesanan ' + nomorPesanan(draft) + ':', ...items.map(barisRincian), 'Total: ' + rp(total), ''];
+      return blok.join('\n') + '\n' + String(teks);
+    }
+    return String(teks);
+  }
+
+  const rincian = /rincian/i.test(baris[idx]);
+  let akhir = idx + 1;
+  while (akhir < baris.length && /^\s*\d+\.\s/.test(baris[akhir])) akhir++;
+  if (rincian) {
+    let j = akhir;
+    while (j < baris.length && baris[j].trim() === '') j++;
+    while (j < baris.length && /^\s*(sub)?total\b/i.test(baris[j])) { akhir = j + 1; j = akhir; }
+  }
+
+  let blok;
+  if (!draft || items.length === 0) {
+    blok = ['Belum ada menu yang tercatat di pesananmu nih.'];
+  } else if (rincian) {
+    blok = ['Rincian pesanan ' + nomorPesanan(draft) + ':', ...items.map(barisRincian), 'Total: ' + rp(total)];
+  } else {
+    blok = ['Pesanan sementara:', ...items.map((i, n) => (n + 1) + '. ' + labelItem(i))];
+  }
+  baris.splice(idx, akhir - idx, ...blok);
+  return baris.join('\n');
+}
+
+function rapikanBalasanCustomer(jid, teks, { pertama = false, rincianDitampilkan = false } = {}) {
   let hasil = String(teks || '');
   if (!hasil) return hasil;
   const c = db.getCustomer(jid);
+
+  hasil = selaraskanDaftarPesanan(jid, hasil, { rincianDitampilkan });
 
   if (c.nama && !c.sapaan) {
     const nama = c.nama.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -2434,12 +2522,32 @@ async function eksekusiRekomendasiMenu({ kelompok }, konteks) {
       .map(bentuk);
   }
   if (hasil.length === 0) return { sukses: false, pesan: 'Belum ada menu yang bisa direkomendasikan.' };
+
+  const totalTersedia = tersedia.filter(sesuai).length;
+  const namaKategori = (kelompok ? db.getKategoriByKelompok(kelompok) : db.getAllKategori()).map((k) => k.nama);
+  const namaBaru = hasil.map((h) => h.nama);
+
+  // Pemanggilan ulang dengan hasil yang sama persis ("yang lain deh") bukan jawaban: maksud customer belum jelas, TANYA dulu.
+  const sebelumnya = konteks?.jid ? db.getPendingState(konteks.jid, 'rekomendasi') : null;
+  if (sebelumnya && JSON.stringify(sebelumnya) === JSON.stringify(namaBaru)) {
+    return {
+      sukses: false,
+      rekomendasi_sama: true,
+      pesan: 'Rekomendasi yang sama sudah diberikan barusan.',
+      total_menu_tersedia: totalTersedia,
+      kategori: namaKategori,
+      catatan_untuk_ai: 'JANGAN bilang "cuma ini yang tersedia": menu andalan hanya sebagian kecil, ada ' + totalTersedia + ' menu tersedia. Maksud customer ("yang lain") belum jelas, jadi TANYA dulu dengan DAFTAR BERNOMOR (maks 4 opsi), misal: "1. Lihat semua menu ' + (kelompok ? LABEL_FASE[kelompok] || kelompok : 'yang ada') + ' (kartu)", "2. Pilih kategori tertentu (' + namaKategori.slice(0, 4).join(', ') + ')", "3. Rekomendasi dari kelompok lain". Setelah customer menjawab, baru panggil tool yang sesuai (lihat_menu).',
+    };
+  }
+
   // Simpan daftar yang ditawarkan supaya balasan angka/nama dari customer dipetakan pasti (lihat buatKonteksDinamisCustomer)
-  if (konteks?.jid) db.setPendingState(konteks.jid, 'rekomendasi', hasil.map((h) => h.nama));
+  if (konteks?.jid) db.setPendingState(konteks.jid, 'rekomendasi', namaBaru);
   return {
     sukses: true,
     rekomendasi: hasil,
-    catatan_untuk_ai: 'Tampilkan sebagai DAFTAR BERNOMOR (nama + harga, dan 1 frasa pendek kenapa enak), maksimal 4 baris, lalu 1 kalimat tanya mau yang mana (cukup balas nomor). Jangan kirim kartu menu, jangan tanya soal fase lagi.',
+    total_menu_tersedia: totalTersedia,
+    kategori: namaKategori,
+    catatan_untuk_ai: 'Ini HANYA menu andalan, BUKAN seluruh menu (ada ' + totalTersedia + ' menu tersedia). Jangan pernah bilang "cuma ini yang tersedia". Tampilkan sebagai DAFTAR BERNOMOR (nama + harga, dan 1 frasa pendek kenapa enak), maksimal 4 baris, lalu 1 kalimat tanya mau yang mana (cukup balas nomor). Jangan kirim kartu menu, jangan tanya soal fase lagi. Kalau customer lalu minta "yang lain" tanpa jelas maksudnya, TANYA dulu (daftar bernomor) sebelum memanggil tool apa pun.',
   };
 }
 

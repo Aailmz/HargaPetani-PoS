@@ -353,7 +353,10 @@ async function routeCustomerTerdaftar(jid, text) {
   }
 
   if (hasil.jawabanFinal) {
-    const balasan = agent.rapikanBalasanCustomer(jid, hasil.jawabanFinal, { pertama: historiChat.length === 0 });
+    const balasan = agent.rapikanBalasanCustomer(jid, hasil.jawabanFinal, {
+      pertama: historiChat.length === 0,
+      rincianDitampilkan: (hasil.toolBerhasil || []).includes('tampilkan_rincian_order'),
+    });
     await kirimPesan(jid, balasan);
     db.simpanChatHistory(jid, 'assistant', balasan);
   }
