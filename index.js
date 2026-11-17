@@ -314,7 +314,7 @@ async function prosesSambutanCustomerBaru(jid, { kirimSapaan = false } = {}) {
   db.registerCustomer(jid);
 
   if (kirimSapaan) {
-    const sapaan = 'Sugeng rawuh di The Banjoemas Resto & Cafe 🙏 Mau dine in atau take away nih, Mas/Mbak? Terus udah di resto, atau mau datang jam berapa?';
+    const sapaan = 'Sugeng rawuh di The Banjoemas Resto & Cafe, Mas/Mbak 🙏\nSudah di resto, atau mau datang nanti?\n1. Sudah di resto\n2. Datang nanti (sebutkan jamnya, misal 19.30)';
     await kirimPesan(jid, sapaan);
     db.simpanChatHistory(jid, 'assistant', sapaan);
   }
@@ -331,6 +331,9 @@ async function routeCustomerTerdaftar(jid, text) {
 
   const historiChat = db.getChatHistory(jid);
   const konteks = buatKonteksUntukAgent(jid);
+
+  // Jawaban "dipanggil apa" (Mas/Mbak) disimpan oleh kode, tidak menunggu AI memanggil tool
+  agent.tangkapJawabanSapaan(jid, text, historiChat);
 
   const hasil = await agent.jalankanAgent({
     systemPrompt: agent.SYSTEM_PROMPT_CUSTOMER + agent.buatBlokInfoResto() + agent.buatKonteksDinamisCustomer(jid),
@@ -350,8 +353,9 @@ async function routeCustomerTerdaftar(jid, text) {
   }
 
   if (hasil.jawabanFinal) {
-    await kirimPesan(jid, hasil.jawabanFinal);
-    db.simpanChatHistory(jid, 'assistant', hasil.jawabanFinal);
+    const balasan = agent.rapikanBalasanCustomer(jid, hasil.jawabanFinal, { pertama: historiChat.length === 0 });
+    await kirimPesan(jid, balasan);
+    db.simpanChatHistory(jid, 'assistant', balasan);
   }
 }
 
