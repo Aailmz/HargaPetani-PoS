@@ -199,7 +199,7 @@ function buatKonteksDinamisCustomer(jid) {
 
   const habis = db.getItemMenungguKeputusanHabisByCustomer(jid);
   if (habis.length > 0) {
-    baris.push(`- Menu yang dilaporkan habis dan menunggu keputusan customer (ganti/batal): ${habis.map((i) => i.nama_snapshot).join(', ')}.`);
+    baris.push(`- Menu yang dilaporkan habis dan menunggu keputusan customer (ganti/batal): ${habis.map((i) => i.nama_snapshot).join(', ')}. Begitu customer menjawab ("batalin aja", "ganti X"), WAJIB langsung panggil putuskan_item_habis di giliran yang SAMA. JANGAN balas dulu "maksudnya dibatalkan ya?" tanpa memanggil tool, karena tanpa tool pembatalan dan refund tidak tercatat.`);
   }
 
   const tagihan = db.getTagihanBelumLunasByCustomer(jid);
@@ -469,7 +469,7 @@ const TOOLS_CUSTOMER = [
         properties: {
           ringkasan: {
             type: 'string',
-            description: 'Ringkasan singkat dan jelas soal apa yang disampaikan/dikeluhkan customer.',
+            description: 'Ringkasan singkat dan jelas soal apa yang disampaikan/dikeluhkan customer. Untuk catatan pesanan (urgent=false) tulis ISI catatannya saja, misal "sate taichan tanpa pedas", tanpa menyebut nomor pesanan atau nama (otomatis ditempel). JANGAN panggil lagi untuk catatan yang sudah pernah dicatat.',
           },
           urgent: {
             type: 'boolean',
@@ -1595,7 +1595,7 @@ async function eksekusiPutuskanItemHabis(
       item: item.nama_snapshot,
       nominal_refund: nominal,
       masih_menunggu_keputusan: sisa.length > 0 ? sisa : undefined,
-      catatan_untuk_ai: 'Beri tahu customer dalam 1 kalimat bahwa pembatalan dicatat dan uang akan dikembalikan kasir. Jangan janjikan metode spesifik.' + ingatkanSisa(sisa),
+      catatan_untuk_ai: 'Beri tahu customer dalam 1 kalimat bahwa pembatalan dicatat dan uangnya dikembalikan TUNAI di kasir (hanya tunai, jangan janjikan transfer).' + ingatkanSisa(sisa),
     };
   }
 
@@ -1703,7 +1703,7 @@ async function eksekusiPutuskanItemHabis(
       infoSelisih.jenis === 'kurang_bayar'
         ? `Beri tahu customer menu sudah diganti ke ${menuBaru.nama}${labelVarian}, ada kekurangan bayar ${rp(infoSelisih.nominal)}. Tanya apakah setuju membayar kekurangan itu lewat QR. JANGAN kirim QR dulu, tunggu customer setuju, baru panggil kirim_qr_kekurangan di giliran berikutnya.`
         : infoSelisih.jenis === 'lebih_bayar_dikembalikan'
-          ? `Beri tahu customer menu sudah diganti ke ${menuBaru.nama}${labelVarian}, ada kelebihan bayar ${rp(infoSelisih.nominal)} yang akan dikembalikan kasir.`
+          ? `Beri tahu customer menu sudah diganti ke ${menuBaru.nama}${labelVarian}, ada kelebihan bayar ${rp(infoSelisih.nominal)} yang dikembalikan tunai di kasir.`
           : `Beri tahu customer menu sudah diganti ke ${menuBaru.nama}${labelVarian}, harganya sama jadi tidak ada selisih.`
     ) + ingatkanSisa(sisa),
   };
@@ -2419,7 +2419,14 @@ async function eksekusiForwardPesanKeKasir({ ringkasan, urgent, pesanan_id }, ko
   if (!urgent) {
     const target = pesananUntukCatatan(konteks.jid);
     if (target) {
-      db.tambahCatatanPesanan(target.id, String(ringkasan || '').trim());
+      const baru = db.tambahCatatanPesanan(target.id, String(ringkasan || '').trim());
+      if (!baru) {
+        return {
+          sukses: true,
+          sudah_tercatat: true,
+          catatan_untuk_ai: 'Catatan ini SUDAH tercatat di pesanan sebelumnya. JANGAN panggil forward_pesan_ke_kasir lagi untuk catatan yang sama, cukup lanjutkan alur seperti biasa.',
+        };
+      }
       const sudahDinotif = target.status === 'MENUNGGU_BAYAR';
       const lunas = target.status === 'SELESAI';
       return {

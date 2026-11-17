@@ -382,20 +382,33 @@ async function handleOperatorMessage(jid, text) {
   }
 }
 
+// Caption QR tanpa AI (dipakai kalau AI gagal/kosong): tetap memuat nomor pesanan, rincian, dan total.
+function captionQrCadangan(pesanan, items, nominalTransfer, preOrder) {
+  const baris = items
+    .filter((i) => i.status_item === 'AKTIF')
+    .map((i, n) => `${n + 1}. ${i.nama_snapshot}${i.tipe === 'TAKE_AWAY' ? ' (take away)' : ''} x${i.qty} = ${rp(i.harga_satuan_snapshot * i.qty)}`);
+  return [
+    `Pesanan ${nomorPesanan(pesanan)}${preOrder ? ` (datang jam ${pesanan.jam_datang})` : pesanan.nomor_meja ? ` (meja ${pesanan.nomor_meja})` : ''}:`,
+    ...baris,
+    `Total ${rp(nominalTransfer)}. Scan QR ini ya, bayar persis segitu 🙏`,
+    preOrder ? `Nanti di resto, lapor ke waiter sebut nomor pesanan ${nomorPesanan(pesanan)} ya.` : '',
+  ].filter(Boolean).join('\n');
+}
+
 async function kirimQrKeCustomer(pesananId, nominalTransfer) {
   const pesanan = db.getPesananById(pesananId);
   const customer = db.getCustomer(pesanan.customer_jid);
   const items = db.getItemsByPesananId(pesananId);
 
   const preOrder = !!pesanan.jam_datang && customer.status_kedatangan !== 'DI_RESTO';
-  const pesanTotal = await ai.generatePesanTotalDanQr(
+  const pesanTotal = (await ai.generatePesanTotalDanQr(
     [customer.sapaan, customer.nama].filter(Boolean).join(' ') || customer.nama,
     items,
     pesanan.subtotal,
     nominalTransfer,
     pesanan.nomor_meja,
     { nomorPesanan: nomorPesanan(pesanan), jamDatang: preOrder ? pesanan.jam_datang : null }
-  );
+  )) || captionQrCadangan(pesanan, items, nominalTransfer, preOrder);
 
   const qrPath = path.join(__dirname, 'images', 'qr', 'qris-statis.jpg');
 
@@ -403,7 +416,7 @@ async function kirimQrKeCustomer(pesananId, nominalTransfer) {
     console.log('⚠️  File QR statis tidak ditemukan di images/qr/qris-statis.jpg');
     await kirimPesan(
         customer.jid,
-        `${pesanTotal || `Total pesanan Mas/Mbak adalah ${rp(nominalTransfer)}.`}\n\n(QR belum tersedia, mohon hubungi kasir untuk info rekening/QR manual)`
+        `${pesanTotal}\n\n(QR belum tersedia, mohon hubungi kasir untuk info rekening/QR manual)`
     );
     return false;
   }
@@ -411,7 +424,7 @@ async function kirimQrKeCustomer(pesananId, nominalTransfer) {
   try {
     await sock.sendMessage(customer.jid, {
       image: fs.readFileSync(qrPath),
-      caption: pesanTotal || `Totalnya ${rp(nominalTransfer)}. Scan QR ini ya, bayar persis segitu.`,
+      caption: pesanTotal,
     });
     console.log(`✅ QR + total terkirim ke ${customer.jid} untuk pesanan ${nomorPesanan(pesanan)} (${rp(nominalTransfer)})`);
     return true;

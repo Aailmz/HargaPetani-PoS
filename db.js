@@ -632,14 +632,19 @@ function getPesananByNomorHarian(nomor, tanggal = tanggalBot()) {
   return db.prepare('SELECT * FROM pesanan WHERE tanggal = ? AND no_harian = ?').get(tanggal, n) || null;
 }
 
-// Tambah catatan ke pesanan (satu catatan per baris, tidak menimpa yang lama)
+// Tambah catatan ke pesanan (satu catatan per baris, tidak menimpa yang lama).
+// Catatan yang sama persis (abaikan huruf besar/kecil dan tanda baca) tidak ditambahkan dua kali.
 function tambahCatatanPesanan(id, teks) {
+  const norm = (t) => String(t).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  const lama = (db.prepare('SELECT catatan_kasir FROM pesanan WHERE id = ?').get(id)?.catatan_kasir || '').split('\n');
+  if (lama.some((c) => norm(c) === norm(teks))) return false;
   db.prepare(`
     UPDATE pesanan SET catatan_kasir = CASE
       WHEN catatan_kasir IS NULL OR catatan_kasir = '' THEN ?
       ELSE catatan_kasir || char(10) || ?
     END WHERE id = ?
   `).run(teks, teks, id);
+  return true;
 }
 
 function setNomorMejaPesanan(id, nomorMeja) {

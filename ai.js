@@ -10,6 +10,10 @@ const client = new OpenAI({
 
 const MODEL = process.env.AI_MODEL;
 
+// Model reasoning (deepseek-v4-flash) memakai token "berpikir" yang ikut menghabiskan max_tokens: dengan batas kecil
+// jawabannya terpotong atau kosong (finish_reason=length). Batas dari pemanggil = panjang jawaban, ruang ini = ruang berpikir.
+const RUANG_REASONING = 2000;
+
 const SYSTEM_PROMPT = `Kamu adalah "The Banjoemas" -- bukan bot, tapi terasa seperti pelayan/admin The Banjoemas Resto & Cafe (resto khas Banyumas/Jawa Tengah) yang ramah dan hangat ke tamu.
 
 Gaya bicaramu:
@@ -28,27 +32,29 @@ ATURAN PENULISAN WAJIB (PELANGGARAN = FATAL):
 - Selesaikan kalimat dengan lengkap, jangan terpotong di tengah.`;
 
 async function callAiText(userPrompt, maxTokens = 350, extraOptions = {}) {
-  try {
-    const completion = await client.chat.completions.create({
-      model: MODEL,
-      messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
-        { role: 'user', content: userPrompt },
-      ],
-      max_tokens: maxTokens,
-      temperature: 0.8,
-      ...extraOptions,
-    });
-    const result = completion.choices[0]?.message?.content?.trim();
-    if (!result) {
-      console.log('⚠️  AI balas kosong.');
+  // Model reasoning kadang membalas kosong walau ruang token cukup: coba sekali lagi sebelum menyerah
+  for (let percobaan = 1; percobaan <= 2; percobaan++) {
+    try {
+      const completion = await client.chat.completions.create({
+        model: MODEL,
+        messages: [
+          { role: 'system', content: SYSTEM_PROMPT },
+          { role: 'user', content: userPrompt },
+        ],
+        max_tokens: maxTokens + RUANG_REASONING,
+        temperature: 0.8,
+        ...extraOptions,
+      });
+      const pilihan = completion.choices[0];
+      const result = pilihan?.message?.content?.trim();
+      if (result) return result;
+      console.log(`⚠️  AI balas kosong (finish=${pilihan?.finish_reason}, percobaan ${percobaan}/2).`);
+    } catch (err) {
+      console.error('❌ AI API error:', err.message);
       return null;
     }
-    return result;
-  } catch (err) {
-    console.error('❌ AI API error:', err.message);
-    return null;
   }
+  return null;
 }
 
 async function callAiJson(systemPromptJson, userPrompt, maxTokens = 500) {
@@ -59,7 +65,7 @@ async function callAiJson(systemPromptJson, userPrompt, maxTokens = 500) {
         { role: 'system', content: systemPromptJson },
         { role: 'user', content: userPrompt },
       ],
-      max_tokens: maxTokens,
+      max_tokens: maxTokens + RUANG_REASONING,
       temperature: 0.2,
     });
     const result = completion.choices[0]?.message?.content?.trim();
@@ -133,7 +139,35 @@ Balas HANYA dengan salah satu:
   return hasil.trim();
 }
 
+// ---------- Pencocokan jawaban customer ke opsi yang sudah ditawarkan ----------
+const normTeks = (t) => String(t ?? '').toLowerCase().replace(/[^a-z0-9\s/]/g, ' ').replace(/\s+/g, ' ').trim();
+const KATA_ISI_JAWABAN = new Set(['yang', 'yg', 'aja', 'saja', 'dong', 'deh', 'ya', 'yaa', 'nomor', 'no', 'pilihan', 'pilih', 'mau', 'itu', 'tolong', 'kak', 'mas', 'mbak', 'nya']);
+
+// Cocokkan jawaban ke SATU dari beberapa opsi tanpa AI: nomor urut ("2") atau kata yang hanya ada di satu opsi.
+// Return indeks opsi, atau -1 kalau tidak pasti (serahkan ke AI).
+function pilihOpsiTanpaAi(jawaban, opsiList) {
+  const j = normTeks(jawaban);
+  const angka = j.match(/^(?:nomor |no )?(\d{1,2})$/);
+  if (angka) {
+    const i = Number(angka[1]) - 1;
+    return i >= 0 && i < opsiList.length ? i : -1;
+  }
+  const tokens = j.split(' ').filter((t) => t && !KATA_ISI_JAWABAN.has(t));
+  if (tokens.length === 0) return -1;
+  const cocok = opsiList
+    .map((o, i) => ({ i, n: normTeks(o) }))
+    .filter(({ n }) => tokens.every((t) => n.includes(t)));
+  return cocok.length === 1 ? cocok[0].i : -1;
+}
+
 async function cocokkanJawabanKlarifikasiMenu(jawabanCustomer, daftarPending) {
+  // Satu pertanyaan saja dan jawabannya jelas ("Kampung", "2"): tidak perlu AI, hasilnya pasti dan cepat
+  if (daftarPending.length === 1) {
+    const p = daftarPending[0];
+    const i = pilihOpsiTanpaAi(jawabanCustomer, p.kandidatList.map((m) => m.nama));
+    if (i >= 0) return [{ menu: p.kandidatList[i], qty: p.qty, tipe: p.tipe || null }];
+  }
+
   const konteksPending = daftarPending.map((p, idx) =>
     `${idx + 1}. Customer sebut "${p.namaInput}" (qty: ${p.qty}), pilihannya: ${p.kandidatList.map((m) => m.nama).join(', ')}`
   ).join('\n');
@@ -154,13 +188,23 @@ Balas JSON array, tiap elemen: {"namaInputAsli": "...", "namaMenuTerpilih": "...
   if (!hasil || !Array.isArray(hasil)) return [];
 
   return hasil.map((h) => {
-    const pending = daftarPending.find((p) => p.namaInput === h.namaInputAsli);
-    const menu = pending?.kandidatList.find((m) => m.nama === h.namaMenuTerpilih);
+    // Toleran: huruf besar/kecil beda, atau cuma 1 pertanyaan sehingga tidak mungkin tertukar
+    const pending = daftarPending.find((p) => p.namaInput === h.namaInputAsli)
+      || daftarPending.find((p) => normTeks(p.namaInput) === normTeks(h.namaInputAsli))
+      || (daftarPending.length === 1 ? daftarPending[0] : null);
+    const menu = pending?.kandidatList.find((m) => normTeks(m.nama) === normTeks(h.namaMenuTerpilih));
     return menu ? { menu, qty: h.qty || pending.qty, tipe: pending.tipe || null } : null;
   }).filter(Boolean);
 }
 
 async function cocokkanJawabanPilihan(jawabanCustomer, daftarPending) {
+  // Satu pertanyaan saja dan jawabannya jelas ("Panas", "2"): tidak perlu AI
+  if (daftarPending.length === 1) {
+    const p = daftarPending[0];
+    const i = pilihOpsiTanpaAi(jawabanCustomer, p.opsiTersedia);
+    if (i >= 0) return [{ pending: p, opsiTerpilih: p.opsiTersedia[i] }];
+  }
+
   const konteksPending = daftarPending.map((p, idx) => {
     if (p.jenisPilihan === 'varian') {
       return `${idx + 1}. Untuk "${p.namaInput}" (qty: ${p.qty}), pilih porsi: ${p.opsiTersedia.join(', ')}`;
@@ -184,9 +228,11 @@ Balas JSON array, tiap elemen: {"namaInputAsli": "...", "opsiTerpilih": "..."}
   if (!hasil || !Array.isArray(hasil)) return [];
 
   return hasil.map((h) => {
-    const pending = daftarPending.find((p) => p.namaInput === h.namaInputAsli);
+    const pending = daftarPending.find((p) => p.namaInput === h.namaInputAsli)
+      || daftarPending.find((p) => normTeks(p.namaInput) === normTeks(h.namaInputAsli))
+      || (daftarPending.length === 1 ? daftarPending[0] : null);
     if (!pending) return null;
-    const opsiValid = pending.opsiTersedia.find((o) => o === h.opsiTerpilih);
+    const opsiValid = pending.opsiTersedia.find((o) => normTeks(o) === normTeks(h.opsiTerpilih));
     return opsiValid ? { pending, opsiTerpilih: opsiValid } : null;
   }).filter(Boolean);
 }
