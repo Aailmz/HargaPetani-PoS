@@ -473,7 +473,7 @@ const TOOLS_CUSTOMER = [
           },
           urgent: {
             type: 'boolean',
-            description: 'true kalau butuh perhatian kasir segera, false kalau cukup informasi biasa.',
+            description: 'true kalau butuh perhatian kasir segera (komplain, alergi serius, minta cancel mendadak): dikirim sebagai chat sendiri dan bot berhenti melayani customer ini. false untuk catatan/permintaan biasa terkait pesanan (misal "tanpa pedas", "es-nya dipisah"): otomatis ditempel di info pesanan ke kasir, TIDAK jadi chat terpisah.',
           },
           pesanan_id: {
             type: 'integer',
@@ -910,7 +910,7 @@ CARA KERJA:
 - Customer sebut nomor meja / bilang sudah sampai kapan pun -> panggil konfirmasi_kedatangan. Kalau sebelumnya sudah setuju kirim QR dan cuma tertahan karena meja, setelah meja tercatat langsung panggil kirim_qr_pembayaran.
 - Customer tanya status pesanan -> cek_status_order_saya.
 - Customer mau batal pesanan yang belum dikonfirmasi -> batalkan_order.
-- Customer komplain/minta sesuatu yang butuh kasir -> forward_pesan_ke_kasir, kabari customer dengan natural kalau itu sudah disampaikan.
+- Customer komplain/minta sesuatu yang butuh kasir -> forward_pesan_ke_kasir, kabari customer dengan natural kalau itu sudah disampaikan. Catatan/permintaan biasa untuk pesanannya (misal "jangan pedas", "es-nya dipisah", "tanpa bawang") -> forward_pesan_ke_kasir dengan urgent=false: sistem menempelkannya di info pesanan ke kasir (bukan chat terpisah), cukup bilang "udah dicatat di pesanannya". Pakai urgent=true HANYA untuk komplain, alergi serius, atau hal mendesak.
 - Obrolan biasa sesuai scope -> balas natural tanpa tool.
 - Customer jawab soal menu yang dilaporkan habis setelah bayar (mau ganti/batal) -> panggil putuskan_item_habis.
 - Kalau customer ganti ke menu yang lebih mahal dan ada kekurangan bayar, jelaskan nominalnya dan tanya apakah setuju. Kalau setuju -> panggil kirim_qr_kekurangan (giliran terpisah).
@@ -1755,6 +1755,7 @@ async function kirimTiketPesananKeStaf(konteks, pesanan, items, { mode = 'MASAK'
       judul,
       `Customer: ${nama}`,
       ...barisItemUntukStaf(items),
+      ...barisCatatanPesanan(pesanan),
       `Total: ${rupiahId(pesanan.total_dibayar || pesanan.subtotal || 0)}`,
       '',
     ];
@@ -1789,6 +1790,21 @@ function barisItemUntukStaf(items) {
     });
 }
 
+// Catatan customer untuk satu pesanan, satu baris per catatan: "📝 Catatan: tanpa pedas"
+function barisCatatanPesanan(pesanan) {
+  const teks = String(pesanan?.catatan_kasir || '').trim();
+  return teks ? teks.split('\n').filter(Boolean).map((c) => `📝 Catatan: ${c}`) : [];
+}
+
+// Pesanan customer yang catatannya masih bisa digabung ke info kasir/tiket (belum dimasak):
+// draft/menunggu bayar, atau pre-order lunas yang belum dikonfirmasi (catatan ikut di pesan "MULAI MASAK").
+function pesananUntukCatatan(jid) {
+  const terbuka = db.getDraftAtauMenungguBayarByCustomer(jid);
+  if (terbuka) return terbuka;
+  const preOrder = db.getPreOrderAktifByCustomer(jid).filter((p) => p.jadwal_status === 'MENUNGGU' || p.jadwal_status === 'DITANYA');
+  return preOrder.length > 0 ? preOrder[preOrder.length - 1] : null;
+}
+
 async function kirimKeSemuaOperator(konteks, pesan) {
   for (const op of db.getAllOperators()) {
     await konteks.kirimPesan(op.jid, pesan);
@@ -1810,6 +1826,7 @@ async function kirimInfoMenungguBayarKeKasir(konteks, pesanan, nominal) {
     const pesan = [
       `💳 MENUNGGU BAYAR | Pesanan ${nomorPesanan(pesanan)} | ${nama} | ${lokasi}`,
       ...barisItemUntukStaf(db.getItemsByPesananId(pesanan.id)),
+      ...barisCatatanPesanan(pesanan),
       `Total: ${rp(nominal)}`,
       '',
       `Kalau pembayaran sudah masuk, bilang: ${cara}`,
@@ -2017,6 +2034,7 @@ function ringkasPesanan(p) {
 
   return {
     nomor_pesanan: nomorPesanan(p),
+    catatan: p.catatan_kasir || undefined,
     jam_datang: p.jam_datang || undefined,
     jadwal: p.jadwal_status ? { MENUNGGU: 'menunggu konfirmasi 30 menit sebelumnya', DITANYA: 'sudah ditanya, menunggu jawaban customer', DIKONFIRMASI: 'dikonfirmasi, dimasak', BATAL: 'tidak jadi datang' }[p.jadwal_status] : undefined,
     pesanan_id: p.id,
@@ -2313,9 +2331,12 @@ async function eksekusiUbahTipeItem({ nama_menu, tipe }, konteks) {
   };
 }
 
-// Ringkasan item untuk pesan ke staf, dengan penanda take away
+// Ringkasan item untuk pesan ke staf, dengan penanda take away dan catatan pesanan
 function ringkasItemStaf(pesananId) {
-  return barisItemUntukStaf(db.getItemsByPesananId(pesananId));
+  return [
+    ...barisItemUntukStaf(db.getItemsByPesananId(pesananId)),
+    ...barisCatatanPesanan(db.getPesananById(pesananId)),
+  ];
 }
 
 async function eksekusiJadwalKedatangan({ aksi, jam_baru }, konteks) {
@@ -2393,6 +2414,27 @@ async function eksekusiJadwalKedatangan({ aksi, jam_baru }, konteks) {
 }
 
 async function eksekusiForwardPesanKeKasir({ ringkasan, urgent, pesanan_id }, konteks) {
+  // Catatan biasa (urgent=false) untuk pesanan yang belum dimasak TIDAK dikirim sebagai chat sendiri:
+  // disimpan di pesanan, lalu ikut di teks "MENUNGGU BAYAR" (dan tiket / "MULAI MASAK").
+  if (!urgent) {
+    const target = pesananUntukCatatan(konteks.jid);
+    if (target) {
+      db.tambahCatatanPesanan(target.id, String(ringkasan || '').trim());
+      const sudahDinotif = target.status === 'MENUNGGU_BAYAR';
+      const lunas = target.status === 'SELESAI';
+      return {
+        sukses: true,
+        digabung_ke_pesanan: nomorPesanan(target),
+        catatan_untuk_ai: `Catatan sudah ditempel di pesanan ${nomorPesanan(target)}. Bilang singkat dan natural bahwa sudah dicatat di pesanannya, JANGAN bilang pesan dikirim terpisah ke kasir. `
+          + (lunas
+            ? 'Pesanan ini pre-order yang belum dimasak, catatannya ikut terbaca dapur saat mulai masak.'
+            : sudahDinotif
+              ? 'QR sudah terkirim jadi kasir membacanya di tiket setelah pembayaran masuk.'
+              : 'Kasir membacanya bareng info pesanan saat QR dikirim.'),
+      };
+    }
+  }
+
   const customer = db.getCustomer(konteks.jid);
   const operatorUtama = db.getAllOperators().find((o) => o.is_utama === 1);
 

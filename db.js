@@ -184,6 +184,7 @@ tambahKolomJikaBelum('customers', 'rencana_datang', 'TEXT');  // NULL = belum di
 tambahKolomJikaBelum('pesanan', 'tanggal', 'TEXT');           // YYYY-MM-DD zona bot, dasar reset nomor harian
 tambahKolomJikaBelum('pesanan', 'no_harian', 'INTEGER');      // nomor pesanan yang ditampilkan ("#007"), beda dari id
 tambahKolomJikaBelum('pesanan', 'jam_datang', 'TEXT');        // 'HH:MM' kalau customer pesan sebelum datang
+tambahKolomJikaBelum('pesanan', 'catatan_kasir', 'TEXT');     // catatan customer untuk pesanan (ikut di info menunggu bayar & tiket, bukan chat terpisah)
 tambahKolomJikaBelum('pesanan', 'jadwal_status', 'TEXT');     // NULL | MENUNGGU | DITANYA | DIKONFIRMASI | BATAL (hanya pre-order yang sudah lunas)
 tambahKolomJikaBelum('pesanan_item', 'tipe', "TEXT DEFAULT 'DINE_IN'"); // 'DINE_IN' | 'TAKE_AWAY'
 
@@ -631,6 +632,16 @@ function getPesananByNomorHarian(nomor, tanggal = tanggalBot()) {
   return db.prepare('SELECT * FROM pesanan WHERE tanggal = ? AND no_harian = ?').get(tanggal, n) || null;
 }
 
+// Tambah catatan ke pesanan (satu catatan per baris, tidak menimpa yang lama)
+function tambahCatatanPesanan(id, teks) {
+  db.prepare(`
+    UPDATE pesanan SET catatan_kasir = CASE
+      WHEN catatan_kasir IS NULL OR catatan_kasir = '' THEN ?
+      ELSE catatan_kasir || char(10) || ?
+    END WHERE id = ?
+  `).run(teks, teks, id);
+}
+
 function setNomorMejaPesanan(id, nomorMeja) {
   db.prepare('UPDATE pesanan SET nomor_meja = ? WHERE id = ?').run(nomorMeja, id);
 }
@@ -1010,7 +1021,7 @@ module.exports = {
   setCustomerNama, setNomorMeja, getAllRegisteredCustomers, cariCustomer,
   normalisasiMeja, getPemakaiMeja, getCustomerDiMeja, kosongkanMejaCustomer,
   getAlur, setAlur, resetAlur, getKategoriByKelompok, setQtyItemPesanan,
-  setTipeItemPesanan, setTipeSemuaItemAktif, getPesananLunasHariIni, setNomorMejaPesanan,
+  setTipeItemPesanan, setTipeSemuaItemAktif, getPesananLunasHariIni, setNomorMejaPesanan, tambahCatatanPesanan,
   setSapaan, setLayanan, getPesananByNomorHarian, setJadwalPesanan, getPreOrderAktifByCustomer, getPreOrderPerluDitanya,
   setStatusCs, getStatusCs, getAllCustomerEskalasi,
   upsertKategori, getAllKategori, getKategoriById,
