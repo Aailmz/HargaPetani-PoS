@@ -521,11 +521,11 @@ const TOOLS_CUSTOMER = [
     type: 'function',
     function: {
       name: 'lewati_fase',
-      description: 'Customer menolak/skip kelompok menu yang sedang ditawarkan (misal "nggak usah minum", "camilannya skip", "itu aja"). Tool ini lanjut ke fase berikutnya dan memberi bahan upsell untuk fase itu. Kalau customer bilang sudah cukup SEMUANYA ("udah itu aja semua", "langsung bayar"), panggil dengan semua=true.',
+      description: 'Customer menolak/skip kelompok menu yang sedang ditawarkan (misal "nggak usah minum", "camilannya skip", "itu aja"). Tolakan biasa seperti ini HANYA melewati tawaran yang barusan; sistem lalu mengajukan SATU tawaran lagi (fase berikutnya) dan setelah ditolak baru lanjut ke rincian. Isi langsung_bayar=true HANYA kalau customer eksplisit minta langsung bayar / minta jangan ditawarin lagi.',
       parameters: {
         type: 'object',
         properties: {
-          semua: { type: 'boolean', description: 'true kalau customer tidak mau ditawari apa-apa lagi dan mau langsung ke rincian/bayar.' },
+          langsung_bayar: { type: 'boolean', description: 'true HANYA kalau customer eksplisit bilang "langsung bayar aja" atau "jangan ditawarin lagi". Untuk "nggak", "udah", "itu aja" biasa, JANGAN diisi.' },
         },
         required: [],
       },
@@ -893,7 +893,7 @@ ALUR PESAN 3 FASE (supaya customer tidak dibanjiri semua menu):
 - SETIAP kali ada menu yang masuk, balas dalam SATU pesan: "Pesanan sementara:" + ringkasan SEMUA item di draft (format angka, tanpa harga), lalu di bawahnya DUA PILIHAN yang jelas dihubungkan kata "atau": nambah lagi, ATAU lanjut ke fase berikutnya (misal setelah camilan: "Mau nambah lagi, Mas/Mbak, atau sekalian minum nih? Kopi, non-kopi, atau dua-duanya juga boleh."). Maksimal 2 kalimat pendek di bagian itu. JANGAN kirim kartu menu dulu, baru dikirim (lihat_menu) kalau customer tertarik.
 - Customer menambah menu -> buat_order (ulangi format di atas). Customer menolak (nggak/udah/nggak usah) -> lewati_fase, sistem lanjut menawarkan fase sesudahnya.
 - JANGAN tanya "sudah?" atau "fix?". "Ada yang mau ditambah?" HANYA dipakai tepat setelah ada menu yang masuk.
-- Customer nolak tawaran fase ("nggak usah minum") -> lewati_fase. Customer bilang langsung bayar / cukup semuanya / nggak mau ditawarin lagi -> lewati_fase dengan semua=true.
+- Customer nolak tawaran ("nggak", "udah", "itu aja", "nggak usah minum") -> lewati_fase TANPA parameter. Itu tolakan biasa: sistem akan mengajukan SATU tawaran lagi lalu berhenti, jadi jangan dianggap customer minta berhenti. Hanya kalau customer eksplisit bilang "langsung bayar aja" / "jangan ditawarin lagi" -> lewati_fase dengan langsung_bayar=true.
 - Fase minuman: upsell, tanya kopi, non-kopi, atau dua-duanya. Jawaban "kopi"/"non kopi"/"dua-duanya" itu pilihan KELOMPOK -> lihat_menu dengan kelompok "kopi" / "non_kopi" / "minuman", BUKAN buat_order.
 - FLEKSIBEL: customer boleh pesan apa saja kapan saja, loncat kelompok, minta lihat kelompok lain (lihat_menu dengan kelompok), atau langsung pesan tanpa pilih jalur. Jangan pernah menolak pesanan karena "belum fasenya".
 - Setelah semua fase lewat -> tampilkan_rincian_order (rincian + tanya nomor meja dan nama sekaligus kalau belum ada / tanya boleh kirim QR). Customer menjawab meja dan nama -> konfirmasi_kedatangan (isi nomor_meja dan nama). Customer setuju -> kirim_qr_pembayaran (kasir otomatis diberi tahu meja, nama, pesanan, nominal). Bayar SEKALI di akhir, nominal persis sesuai total, tanpa kode unik.
@@ -1525,8 +1525,8 @@ async function eksekusiTampilkanRincianOrder(_, konteks) {
     sukses: true,
     pesanan_id: draft.id,
     items: items.map((i) => {
-      const pilihan = i.pilihan_terpilih ? JSON.parse(i.pilihan_terpilih) : null;
-      const infoPilihan = pilihan ? ` [${Object.entries(pilihan).map(([k, v]) => `${k}: ${v}`).join(', ')}]` : '';
+      const pilihan = db.pilihanTampil(i);
+      const infoPilihan = Object.keys(pilihan).length > 0 ? ` [${Object.entries(pilihan).map(([k, v]) => `${k}: ${v}`).join(', ')}]` : '';
       const infoTipe = i.tipe === 'TAKE_AWAY' ? ' [take away]' : '';
       return `${i.nama_snapshot}${infoPilihan}${infoTipe} x${i.qty}${i.catatan ? ` (${i.catatan})` : ''} @ ${rp(i.harga_satuan_snapshot)} = ${rp(i.harga_satuan_snapshot * i.qty)}`;
     }),
@@ -1783,7 +1783,7 @@ function barisItemUntukStaf(items) {
   return items
     .filter((i) => i.status_item === 'AKTIF')
     .map((i) => {
-      const pilihan = i.pilihan_terpilih ? Object.values(JSON.parse(i.pilihan_terpilih)).join(', ') : '';
+      const pilihan = Object.values(db.pilihanTampil(i)).join(', ');
       const ket = [pilihan, i.catatan].filter(Boolean).join('; ');
       const ta = i.tipe === 'TAKE_AWAY' ? ' [TAKE AWAY]' : '';
       return `${i.qty}x ${i.nama_snapshot}${ta}${ket ? ` (${ket})` : ''}  ${rupiahId(i.harga_satuan_snapshot * i.qty)}`;
@@ -2219,7 +2219,7 @@ async function eksekusiPilihJalur({ jalur }, konteks) {
   return { sukses: true, jalur, ...(await tawarkanFaseBerikutnya(konteks, { kirimKartu: true })) };
 }
 
-async function eksekusiLewatiFase({ semua }, konteks) {
+async function eksekusiLewatiFase({ langsung_bayar }, konteks) {
   const alur = db.getAlur(konteks.jid);
   if (alur.tutup) return { sukses: false, pesan: 'Alur fase sudah selesai (sudah bayar).' };
 
@@ -2227,10 +2227,11 @@ async function eksekusiLewatiFase({ semua }, konteks) {
   const fase = faseBerikutnya({ ...alur, jalur });
 
   // Tawaran fase berikutnya sudah dilontarkan bareng "ada yang mau ditambah?", jadi "nggak" berarti
-  // fase itu ditolak: lewati, lalu tawarkan fase sesudahnya (atau lanjut rincian kalau sudah habis).
+  // fase itu ditolak: lewati, lalu tawarkan fase sesudahnya SEKALI LAGI (atau lanjut rincian kalau sudah habis).
+  // Hanya permintaan eksplisit "langsung bayar / jangan ditawarin lagi" yang menghentikan semua tawaran.
   let selesai = alur.selesai;
   let dilewati;
-  if (semua) {
+  if (langsung_bayar) {
     selesai = [...URUTAN_JALUR[jalur]];
     dilewati = 'semua';
   } else if (fase) {

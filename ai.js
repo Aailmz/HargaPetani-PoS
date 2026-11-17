@@ -79,7 +79,7 @@ async function callAiJson(systemPromptJson, userPrompt, maxTokens = 500) {
 }
 
 const { cariKandidatMenu } = require('./matcher');
-const { upsertMenu } = require('./db');
+const { upsertMenu, pilihanTampil } = require('./db');
 const { rp } = require('./format');
 
 /**
@@ -518,8 +518,8 @@ Balas HANYA dengan isi pesannya saja, tanpa tanda kutip.`;
 async function generatePesanTotalDanQr(namaCustomer, items, subtotal, nominalTransfer, nomorMeja, opsi = {}) {
   const daftarItem = items
     .map((i) => {
-      const pilihan = i.pilihan_terpilih ? JSON.parse(i.pilihan_terpilih) : null;
-      const infoPilihan = pilihan ? ` [${Object.entries(pilihan).map(([k, v]) => `${k}: ${v}`).join(', ')}]` : '';
+      const pilihan = pilihanTampil(i);
+      const infoPilihan = Object.keys(pilihan).length > 0 ? ` [${Object.entries(pilihan).map(([k, v]) => `${k}: ${v}`).join(', ')}]` : '';
       const infoTipe = i.tipe === 'TAKE_AWAY' ? ' [take away]' : '';
       return `${i.nama_snapshot}${infoPilihan}${infoTipe} x${i.qty}${i.catatan ? ` (${i.catatan})` : ''} @ ${rp(i.harga_satuan_snapshot)} = ${rp(i.harga_satuan_snapshot * i.qty)}`;
     })
@@ -530,7 +530,7 @@ async function generatePesanTotalDanQr(namaCustomer, items, subtotal, nominalTra
   if (opsi.jamDatang) infoMeja = `Datang jam ${opsi.jamDatang} (meja diinfokan nanti begitu sampai di resto)`;
   else if (nomorMeja) infoMeja = `Meja: ${nomorMeja}`;
   const infoNomor = opsi.nomorPesanan
-    ? `Nomor pesanan: ${opsi.nomorPesanan} (WAJIB disebut jelas, customer perlu menyebutkannya ke waiter nanti)\n`
+    ? `Nomor pesanan: ${opsi.nomorPesanan} (WAJIB disebut jelas${opsi.jamDatang ? ', customer perlu menyebutkannya ke waiter saat sampai nanti' : ', customer sudah di resto sehingga jangan minta nomor meja atau menyuruh lapor ke waiter'})\n`
     : '';
 
   const prompt = `Pesanan ${namaCustomer || 'customer'} sudah fix. Rinciannya:

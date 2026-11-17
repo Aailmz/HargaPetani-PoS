@@ -681,6 +681,23 @@ function getPreOrderPerluDitanya(menitSebelum = 30) {
   });
 }
 
+// Pilihan item yang PERLU ditampilkan ke customer/staf: nilai default yang tidak wajib (misal Sambal "Dengan sambal")
+// dibuang karena itu kondisi normal dan bikin teks berisik di setiap item. Pilihan wajib (Suhu) dan nilai
+// yang beda dari default (misal "Tanpa sambal") tetap tampil.
+function pilihanTampil(item) {
+  if (!item?.pilihan_terpilih) return {};
+  let dipilih;
+  try { dipilih = JSON.parse(item.pilihan_terpilih); } catch { return {}; }
+  const menu = item.menu_id ? getMenuById(item.menu_id) : null;
+  const hasil = {};
+  for (const [nama, nilai] of Object.entries(dipilih)) {
+    const def = menu?.pilihan.find((p) => p.nama === nama);
+    if (def && !def.wajib && def.default_opsi === nilai) continue;
+    hasil[nama] = nilai;
+  }
+  return hasil;
+}
+
 function setTipeItemPesanan(itemId, tipe) {
   db.prepare('UPDATE pesanan_item SET tipe = ? WHERE id = ?').run(tipe, itemId);
 }
@@ -1026,7 +1043,7 @@ module.exports = {
   setCustomerNama, setNomorMeja, getAllRegisteredCustomers, cariCustomer,
   normalisasiMeja, getPemakaiMeja, getCustomerDiMeja, kosongkanMejaCustomer,
   getAlur, setAlur, resetAlur, getKategoriByKelompok, setQtyItemPesanan,
-  setTipeItemPesanan, setTipeSemuaItemAktif, getPesananLunasHariIni, setNomorMejaPesanan, tambahCatatanPesanan,
+  pilihanTampil, setTipeItemPesanan, setTipeSemuaItemAktif, getPesananLunasHariIni, setNomorMejaPesanan, tambahCatatanPesanan,
   setSapaan, setLayanan, getPesananByNomorHarian, setJadwalPesanan, getPreOrderAktifByCustomer, getPreOrderPerluDitanya,
   setStatusCs, getStatusCs, getAllCustomerEskalasi,
   upsertKategori, getAllKategori, getKategoriById,
