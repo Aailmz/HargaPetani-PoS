@@ -361,7 +361,7 @@ async function prosesSambutanCustomerBaru(jid, { kirimSapaan = false } = {}) {
   db.setLayanan(jid, { rencana: 'SEKARANG' }); // chat pertama = sudah duduk di meja (default), tidak perlu ditanya
 
   if (kirimSapaan) {
-    const sapaan = `Sugeng rawuh di The Banjoemas Resto & Cafe, Mas/Mbak. Aku ${config.namaAi()} 🙏 Mau lihat menu dulu, atau langsung pesan?`;
+    const sapaan = `Sugeng rawuh di The Banjoemas Resto & Cafe, Mas/Mbak. Aku ${config.namaAi()} 🙏 Mau mulai dari mana?\n1. Makan berat\n2. Nyemil`;
     await kirimPesan(jid, sapaan);
     db.simpanChatHistory(jid, 'assistant', sapaan);
   }
