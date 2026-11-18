@@ -2,8 +2,10 @@ const Database = require('better-sqlite3');
 const path = require('path');
 require('dotenv').config();
 const { tanggalBot, menitSekarangBot, parseJam } = require('./format');
+const config = require('./config');
 
-const db = new Database(path.join(__dirname, 'resto-bot.db'));
+// DB_PATH dipakai untuk uji coba supaya database asli tidak tersentuh
+const db = new Database(process.env.DB_PATH || path.join(__dirname, 'resto-bot.db'));
 
 // ========== SKEMA ==========
 
@@ -188,6 +190,77 @@ tambahKolomJikaBelum('pesanan', 'catatan_kasir', 'TEXT');     // catatan custome
 tambahKolomJikaBelum('pesanan', 'jadwal_status', 'TEXT');     // NULL | MENUNGGU | DITANYA | DIKONFIRMASI | BATAL (hanya pre-order yang sudah lunas)
 tambahKolomJikaBelum('pesanan_item', 'tipe', "TEXT DEFAULT 'DINE_IN'"); // 'DINE_IN' | 'TAKE_AWAY'
 
+// [Pajak] harga menu BELUM termasuk PPN: subtotal = jumlah harga menu, grand_total = subtotal + PPN
+tambahKolomJikaBelum('pesanan', 'ppn', 'INTEGER');
+tambahKolomJikaBelum('pesanan', 'grand_total', 'INTEGER');
+// [Bayar] 'BAYAR_DULU' (default) | 'OPEN_BILL'. Status OPEN_BILL = sudah di dapur, bayar belakangan.
+tambahKolomJikaBelum('pesanan', 'metode_bayar', "TEXT DEFAULT 'BAYAR_DULU'");
+tambahKolomJikaBelum('customers', 'cara_bayar', 'TEXT');           // NULL/'BAYAR_DULU' | 'OPEN_BILL' (diminta customer)
+tambahKolomJikaBelum('customers', 'layanan_ditanya', 'INTEGER DEFAULT 0'); // 1 = dine in/take away sudah dijawab di kunjungan ini
+
+// [QR dinamis] Permintaan QR ke kasir. Kasir membuat QRIS di POS, memfoto, lalu mengirim fotonya ke bot.
+//   jenis: PESANAN (ref_ids = [pesanan_id]) | BILL (ref_ids = banyak pesanan open bill) | TAGIHAN (ref_ids = [tagihan_id]) | DEPOSIT (ref_ids = [booking_id])
+db.exec(`
+  CREATE TABLE IF NOT EXISTS permintaan_qr (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    jenis TEXT NOT NULL,
+    ref_ids TEXT NOT NULL,
+    customer_jid TEXT NOT NULL,
+    label TEXT,
+    nominal INTEGER NOT NULL,
+    status TEXT DEFAULT 'MENUNGGU',   -- MENUNGGU | TERKIRIM | BATAL
+    qr_path TEXT,
+    pengingat INTEGER DEFAULT 0,
+    pengingat_at TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )
+`);
+// Tiap pesan permintaan yang dikirim ke tiap kasir dicatat, supaya "reply pesan itu" bisa dipetakan ke permintaannya
+db.exec(`
+  CREATE TABLE IF NOT EXISTS tiket_kasir (
+    msg_id TEXT NOT NULL,
+    operator_jid TEXT NOT NULL,
+    permintaan_id INTEGER NOT NULL,
+    PRIMARY KEY (msg_id, operator_jid)
+  )
+`);
+
+// [Kunjungan] Satu kunjungan = dari pesanan pertama dikonfirmasi sampai meja dikosongkan. Dasar timer 3 jam dan rating.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS kunjungan (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    customer_jid TEXT NOT NULL,
+    nomor_meja TEXT,
+    mulai_at TEXT NOT NULL,
+    status TEXT DEFAULT 'AKTIF',      -- AKTIF | MENUNGGU_RATING | MENUNGGU_ALASAN | SELESAI
+    ditanya_kasir_at TEXT,
+    jumlah_ditanya INTEGER DEFAULT 0,
+    rating INTEGER,
+    alasan TEXT,
+    kuis_ditawarkan INTEGER DEFAULT 0,
+    selesai_at TEXT
+  )
+`);
+
+// [Booking] Ruang VIP / seluruh resto
+db.exec(`
+  CREATE TABLE IF NOT EXISTS booking (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    customer_jid TEXT NOT NULL,
+    jenis TEXT NOT NULL,              -- 'RUANG_VIP' | 'FULL_RESTO'
+    tanggal TEXT NOT NULL,
+    jam TEXT NOT NULL,
+    jumlah_orang INTEGER,
+    nama TEXT,
+    rokok TEXT,                       -- 'SMOKING' | 'NON_SMOKING' | NULL
+    catatan TEXT,
+    status TEXT DEFAULT 'MENUNGGU_KONFIRMASI', -- MENUNGGU_KONFIRMASI | MENUNGGU_DEPOSIT | DIKONFIRMASI | DITOLAK | BATAL
+    deposit INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )
+`);
+
 // Backfill pesanan lama: tanggal (zona bot) dan nomor harian berurutan per tanggal
 {
   const lama = db.prepare('SELECT id, created_at FROM pesanan WHERE tanggal IS NULL ORDER BY id').all();
@@ -339,7 +412,8 @@ function setLayanan(jid, { tipe, rencana }) {
 function normalisasiMeja(nomor) {
   if (nomor === null || nomor === undefined) return null;
   const n = String(nomor).trim().toUpperCase().replace(/^MEJA\s*/, '').replace(/\s+/g, '').replace(/^0+(?=\d)/, '');
-  return n || null;
+  // Nomor meja harus pendek dan memuat angka ("5", "12", "A3", "VIP1"); teks seperti "belum disebut" bukan nomor meja
+  return /^[A-Z]{0,4}\d{1,3}[A-Z]?$/.test(n) ? n : null;
 }
 
 // Customer lain yang sedang menempati meja ini (kunci meja per orang)
@@ -393,7 +467,7 @@ function resetAlur(jid) {
   // Kunjungan baru: jalur, layanan, dan rencana kedatangan ditanya ulang. Nama & sapaan tetap diingat.
   db.prepare(`
     UPDATE customers SET jalur = NULL, fase_selesai = NULL, alur_tutup = 0, alur_updated_at = NULL,
-      tipe_default = NULL, rencana_datang = NULL WHERE jid = ?
+      tipe_default = NULL, rencana_datang = NULL, cara_bayar = NULL, layanan_ditanya = 0 WHERE jid = ?
   `).run(jid);
 }
 
@@ -721,7 +795,7 @@ function getDraftAtauMenungguBayarByCustomer(customerJid) {
   return db.prepare(`
     SELECT * FROM pesanan
     WHERE customer_jid = ? AND status IN ('DRAFT_MENUNGGU_KONFIRMASI', 'MENUNGGU_BAYAR')
-    ORDER BY created_at DESC LIMIT 1
+    ORDER BY created_at DESC, id DESC LIMIT 1
   `).get(customerJid);
 }
 
@@ -731,20 +805,195 @@ function hapusItemPesanan(pesananId) {
 
 function setStatusPesanan(id, status) {
   db.prepare(`UPDATE pesanan SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(status, id);
+  // Pesanan kembali jadi draft / dibatalkan: permintaan QR yang masih menggantung tidak berlaku lagi
+  if (status === 'DRAFT_MENUNGGU_KONFIRMASI' || status === 'DIBATALKAN') return batalkanPermintaanQrPesanan(id);
+  return [];
 }
 
+// Permintaan QR sudah selesai (pembayaran masuk)
+function setPermintaanQrLunas(id) {
+  db.prepare(`UPDATE permintaan_qr SET status = 'LUNAS', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(id);
+}
+
+// subtotal = jumlah harga menu (belum PPN). ppn dan grand_total dihitung di sini supaya selalu konsisten.
 function setHargaFixPesanan(id, subtotal) {
-  db.prepare(`UPDATE pesanan SET subtotal = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(subtotal, id);
+  const t = subtotal === null || subtotal === undefined ? { ppn: null, grandTotal: null } : config.hitungTagihan(subtotal);
+  db.prepare(`UPDATE pesanan SET subtotal = ?, ppn = ?, grand_total = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
+    .run(subtotal ?? null, t.ppn, t.grandTotal, id);
 }
 
-// [#4] Lunas = status SELESAI + kunci nominal yang diterima (omzet tidak ikut berubah saat subtotal dihitung ulang)
+function setMetodeBayarPesanan(id, metode) {
+  db.prepare(`UPDATE pesanan SET metode_bayar = ? WHERE id = ?`).run(metode, id);
+}
+
+// [#4] Lunas = status SELESAI + kunci nominal yang diterima (grand total termasuk PPN; omzet tidak ikut berubah saat dihitung ulang)
 function setPesananLunas(id) {
   db.prepare(`
     UPDATE pesanan
-    SET status = 'SELESAI', total_dibayar = COALESCE(subtotal, 0),
+    SET status = 'SELESAI', total_dibayar = COALESCE(grand_total, subtotal, 0),
         paid_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
     WHERE id = ?
   `).run(id);
+}
+
+// ---------- [QR dinamis] PERMINTAAN QR KE KASIR ----------
+function buatPermintaanQr({ jenis, refIds, customerJid, label, nominal }) {
+  const id = db.prepare(`
+    INSERT INTO permintaan_qr (jenis, ref_ids, customer_jid, label, nominal) VALUES (?, ?, ?, ?, ?)
+  `).run(jenis, JSON.stringify(refIds), customerJid, label ?? null, nominal).lastInsertRowid;
+  return getPermintaanQr(id);
+}
+
+function parsePermintaan(row) {
+  if (!row) return null;
+  let refIds = [];
+  try { refIds = JSON.parse(row.ref_ids); } catch { refIds = []; }
+  return { ...row, ref_ids: refIds };
+}
+
+function getPermintaanQr(id) {
+  return parsePermintaan(db.prepare('SELECT * FROM permintaan_qr WHERE id = ?').get(id));
+}
+
+function getPermintaanQrMenunggu() {
+  return db.prepare(`SELECT * FROM permintaan_qr WHERE status = 'MENUNGGU' ORDER BY id`).all().map(parsePermintaan);
+}
+
+// Permintaan terakhir (apa pun statusnya, kecuali BATAL) untuk satu pesanan
+function getPermintaanQrByPesanan(pesananId, statuses = ['MENUNGGU', 'TERKIRIM']) {
+  const rows = db.prepare(`SELECT * FROM permintaan_qr WHERE jenis IN ('PESANAN', 'BILL') ORDER BY id DESC`).all().map(parsePermintaan);
+  return rows.find((r) => statuses.includes(r.status) && r.ref_ids.includes(pesananId)) || null;
+}
+
+function getPermintaanQrByRef(jenis, refId, statuses = ['MENUNGGU', 'TERKIRIM']) {
+  const rows = db.prepare('SELECT * FROM permintaan_qr WHERE jenis = ? ORDER BY id DESC').all(jenis).map(parsePermintaan);
+  return rows.find((r) => statuses.includes(r.status) && r.ref_ids.includes(refId)) || null;
+}
+
+function setPermintaanQrTerkirim(id, qrPath) {
+  db.prepare(`UPDATE permintaan_qr SET status = 'TERKIRIM', qr_path = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(qrPath, id);
+}
+
+function setPermintaanQrBatal(id) {
+  db.prepare(`UPDATE permintaan_qr SET status = 'BATAL', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(id);
+}
+
+function catatPengingatQr(id) {
+  db.prepare(`UPDATE permintaan_qr SET pengingat = pengingat + 1, pengingat_at = ? WHERE id = ?`).run(new Date().toISOString(), id);
+}
+
+// Dipanggil otomatis saat pesanan kembali draft / dibatalkan. Mengembalikan permintaan yang dibatalkan (untuk info ke kasir).
+function batalkanPermintaanQrPesanan(pesananId) {
+  const dibatalkan = [];
+  const rows = db.prepare(`SELECT * FROM permintaan_qr WHERE status IN ('MENUNGGU', 'TERKIRIM') AND jenis IN ('PESANAN', 'BILL')`).all().map(parsePermintaan);
+  for (const r of rows) {
+    if (!r.ref_ids.includes(pesananId)) continue;
+    setPermintaanQrBatal(r.id);
+    dibatalkan.push(r);
+  }
+  return dibatalkan;
+}
+
+function simpanTiketKasir(msgId, operatorJid, permintaanId) {
+  if (!msgId) return;
+  db.prepare(`INSERT OR REPLACE INTO tiket_kasir (msg_id, operator_jid, permintaan_id) VALUES (?, ?, ?)`).run(msgId, operatorJid, permintaanId);
+}
+
+function getPermintaanDariTiket(msgId) {
+  const row = db.prepare('SELECT permintaan_id FROM tiket_kasir WHERE msg_id = ?').get(msgId);
+  return row ? getPermintaanQr(row.permintaan_id) : null;
+}
+
+// ---------- [OPEN BILL] ----------
+function getPesananOpenBillByCustomer(customerJid) {
+  return db.prepare(`
+    SELECT * FROM pesanan WHERE customer_jid = ? AND status = 'OPEN_BILL' ORDER BY no_harian
+  `).all(customerJid);
+}
+
+// Pesanan yang belum lunas tapi sudah (atau akan) ditagih: menunggu bayar atau open bill
+function getPesananBelumLunas() {
+  return db.prepare(`
+    SELECT p.*, c.nama, c.nomor_meja AS nomor_meja_customer FROM pesanan p
+    JOIN customers c ON c.jid = p.customer_jid
+    WHERE p.status IN ('MENUNGGU_BAYAR', 'OPEN_BILL')
+    ORDER BY p.created_at ASC
+  `).all();
+}
+
+function setCaraBayar(jid, cara) {
+  getOrCreateCustomer(jid);
+  db.prepare('UPDATE customers SET cara_bayar = ? WHERE jid = ?').run(cara, jid);
+}
+
+function setLayananDitanya(jid, nilai = 1) {
+  getOrCreateCustomer(jid);
+  db.prepare('UPDATE customers SET layanan_ditanya = ? WHERE jid = ?').run(nilai ? 1 : 0, jid);
+}
+
+// ---------- [KUNJUNGAN] timer meja & rating ----------
+function getKunjunganAktif(customerJid) {
+  return db.prepare(`SELECT * FROM kunjungan WHERE customer_jid = ? AND status = 'AKTIF' ORDER BY id DESC LIMIT 1`).get(customerJid) || null;
+}
+
+function mulaiKunjungan(customerJid, nomorMeja) {
+  const ada = getKunjunganAktif(customerJid);
+  if (ada) {
+    if (nomorMeja && ada.nomor_meja !== nomorMeja) db.prepare('UPDATE kunjungan SET nomor_meja = ? WHERE id = ?').run(nomorMeja, ada.id);
+    return ada;
+  }
+  const id = db.prepare('INSERT INTO kunjungan (customer_jid, nomor_meja, mulai_at) VALUES (?, ?, ?)')
+    .run(customerJid, nomorMeja ?? null, new Date().toISOString()).lastInsertRowid;
+  return db.prepare('SELECT * FROM kunjungan WHERE id = ?').get(id);
+}
+
+function updateKunjungan(id, kolom) {
+  const kunci = Object.keys(kolom);
+  if (kunci.length === 0) return;
+  db.prepare(`UPDATE kunjungan SET ${kunci.map((k) => `${k} = ?`).join(', ')} WHERE id = ?`).run(...kunci.map((k) => kolom[k]), id);
+}
+
+// Kunjungan aktif yang sudah lewat batas (default 3 jam) dan perlu ditanyakan ke kasir
+function getKunjunganPerluDitanya(batasJam, ulangMenit = 30) {
+  const sekarang = Date.now();
+  return db.prepare(`SELECT * FROM kunjungan WHERE status = 'AKTIF'`).all().filter((k) => {
+    if (sekarang - new Date(k.mulai_at).getTime() < batasJam * 3600 * 1000) return false;
+    if (!k.ditanya_kasir_at) return true;
+    return k.jumlah_ditanya < 6 && sekarang - new Date(k.ditanya_kasir_at).getTime() >= ulangMenit * 60 * 1000;
+  });
+}
+
+function getKunjunganRating(customerJid) {
+  return db.prepare(`
+    SELECT * FROM kunjungan WHERE customer_jid = ? AND status IN ('MENUNGGU_RATING', 'MENUNGGU_ALASAN') ORDER BY id DESC LIMIT 1
+  `).get(customerJid) || null;
+}
+
+// Kunjungan aktif di satu meja (untuk jawaban kasir "meja 5 kosong")
+function getKunjunganAktifByMeja(nomorMeja) {
+  return db.prepare(`SELECT * FROM kunjungan WHERE status = 'AKTIF' AND nomor_meja = ?`).all(normalisasiMeja(nomorMeja));
+}
+
+function getKunjunganMenungguKosong() {
+  return db.prepare(`SELECT * FROM kunjungan WHERE status = 'AKTIF' AND ditanya_kasir_at IS NOT NULL ORDER BY mulai_at`).all();
+}
+
+// ---------- [BOOKING] ----------
+function buatBooking(b) {
+  return db.prepare(`
+    INSERT INTO booking (customer_jid, jenis, tanggal, jam, jumlah_orang, nama, rokok, catatan)
+    VALUES (@customer_jid, @jenis, @tanggal, @jam, @jumlah_orang, @nama, @rokok, @catatan)
+  `).run({ jumlah_orang: null, nama: null, rokok: null, catatan: null, ...b }).lastInsertRowid;
+}
+function getBooking(id) { return db.prepare('SELECT * FROM booking WHERE id = ?').get(id) || null; }
+function setStatusBooking(id, status, deposit) {
+  db.prepare('UPDATE booking SET status = ?, deposit = COALESCE(?, deposit) WHERE id = ?').run(status, deposit ?? null, id);
+}
+function getBookingAktifByCustomer(customerJid) {
+  return db.prepare(`SELECT * FROM booking WHERE customer_jid = ? AND status IN ('MENUNGGU_KONFIRMASI', 'MENUNGGU_DEPOSIT', 'DIKONFIRMASI') ORDER BY id DESC`).all(customerJid);
+}
+function getBookingMenungguDeposit() {
+  return db.prepare(`SELECT b.*, c.nama AS nama_customer FROM booking b JOIN customers c ON c.jid = b.customer_jid WHERE b.status = 'MENUNGGU_DEPOSIT' ORDER BY b.id`).all();
 }
 
 // ---------- [#7b] TAGIHAN TAMBAHAN ----------
@@ -916,7 +1165,8 @@ function hitungUlangSubtotalAktif(pesananId) {
     SELECT COALESCE(SUM(harga_satuan_snapshot * qty), 0) as total
     FROM pesanan_item WHERE pesanan_id = ? AND status_item = 'AKTIF'
   `).get(pesananId);
-  db.prepare('UPDATE pesanan SET subtotal = ? WHERE id = ?').run(row.total, pesananId);
+  const t = config.hitungTagihan(row.total);
+  db.prepare('UPDATE pesanan SET subtotal = ?, ppn = ?, grand_total = ? WHERE id = ?').run(row.total, t.ppn, t.grandTotal, pesananId);
   return row.total;
 }
 
@@ -944,7 +1194,7 @@ function getStatistikHarian() {
     FROM pesanan_item pi
     JOIN pesanan p ON p.id = pi.pesanan_id
     WHERE pi.status_item = 'AKTIF'
-      AND p.status IN ('MENUNGGU_BAYAR', 'SELESAI')
+      AND p.status IN ('MENUNGGU_BAYAR', 'OPEN_BILL', 'SELESAI')
       AND date(p.created_at, 'localtime') = ${hariIni}
     GROUP BY pi.nama_snapshot
     ORDER BY jumlah_order DESC LIMIT 5
@@ -981,7 +1231,7 @@ function getPesananHariIniByCustomer(customerJid) {
     WHERE customer_jid = ? AND status != 'DIBATALKAN'
       AND (
         date(created_at, 'localtime') = date('now', 'localtime')
-        OR status IN ('DRAFT_MENUNGGU_KONFIRMASI', 'MENUNGGU_BAYAR')
+        OR status IN ('DRAFT_MENUNGGU_KONFIRMASI', 'MENUNGGU_BAYAR', 'OPEN_BILL')
       )
     ORDER BY id DESC
   `).all(customerJid);
@@ -1059,7 +1309,14 @@ module.exports = {
   tandaiRefundDiproses, hitungUlangSubtotalAktif,
   simpanChatHistory, getChatHistory,
   setPendingState, getPendingState, clearPendingState,
-  setPesananLunas,
+  setPesananLunas, setMetodeBayarPesanan,
+  buatPermintaanQr, getPermintaanQr, getPermintaanQrMenunggu, getPermintaanQrByPesanan, getPermintaanQrByRef,
+  setPermintaanQrTerkirim, setPermintaanQrBatal, setPermintaanQrLunas, catatPengingatQr, batalkanPermintaanQrPesanan,
+  simpanTiketKasir, getPermintaanDariTiket,
+  getPesananOpenBillByCustomer, getPesananBelumLunas, setCaraBayar, setLayananDitanya,
+  getKunjunganAktif, mulaiKunjungan, updateKunjungan, getKunjunganPerluDitanya, getKunjunganRating,
+  getKunjunganAktifByMeja, getKunjunganMenungguKosong,
+  buatBooking, getBooking, setStatusBooking, getBookingAktifByCustomer, getBookingMenungguDeposit,
   buatTagihanTambahan, getTagihanById, getTagihanBelumLunasByCustomer,
   getTagihanMenungguBayar, setTagihanMenungguBayar, setTagihanLunas,
   setInfoResto, getInfoResto, getPesananHariIniByCustomer,
