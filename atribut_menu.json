@@ -1,0 +1,1657 @@
+{
+  "_catatan": "Atribut menu disusun dari deskripsi menu (ASUMSI), belum diverifikasi dapur. Ubah status jadi \"terverifikasi\" per menu setelah dicek; bot memakai kata \"umumnya/biasanya\" selama status \"asumsi\". \"pedas\" = hidangannya sendiri terasa pedas (sambal opsional dibaca dari pilihan menu). Nilai rasa/bahan/bumbu/masak harus dari kosakata. Urutan rasa: yang pertama = rasa dominan.",
+  "versi": 1,
+  "kosakata": {
+    "rasa": [
+      "manis",
+      "gurih",
+      "asam",
+      "pahit",
+      "segar",
+      "creamy",
+      "rempah"
+    ],
+    "masak": [
+      "goreng",
+      "bakar",
+      "rebus",
+      "kukus",
+      "tumis",
+      "panggang",
+      "seduh",
+      "blend",
+      "peras",
+      "campur"
+    ],
+    "bahan": [
+      "air",
+      "alpukat",
+      "asam_jawa",
+      "ayam",
+      "bakso",
+      "bebek",
+      "belut",
+      "beras",
+      "berry",
+      "buah",
+      "cendol",
+      "coklat",
+      "edamame",
+      "gula_aren",
+      "gula_merah",
+      "jagung",
+      "jahe",
+      "jambu",
+      "jeruk",
+      "kacang",
+      "kambing",
+      "kelapa",
+      "kencur",
+      "kentang",
+      "kerupuk",
+      "ketupat",
+      "kol",
+      "kopi",
+      "kunyit",
+      "leci",
+      "lemon",
+      "mangga",
+      "matcha",
+      "mie",
+      "mint",
+      "nasi",
+      "nira",
+      "pisang",
+      "santan",
+      "sapi",
+      "sayur",
+      "secang",
+      "selasih",
+      "serai",
+      "singkong",
+      "siomay",
+      "sirsak",
+      "soda",
+      "stroberi",
+      "susu",
+      "tahu",
+      "talas",
+      "teh",
+      "telur",
+      "tempe",
+      "tepung",
+      "tepung_aci",
+      "timun",
+      "tomat",
+      "ubi",
+      "wortel"
+    ],
+    "bumbu": [
+      "bawang",
+      "bumbu_kacang",
+      "butterscotch",
+      "daun_bawang",
+      "gula",
+      "irish_cream",
+      "jeruk_limau",
+      "jeruk_nipis",
+      "kaldu",
+      "karamel",
+      "kecap",
+      "mawar",
+      "nira",
+      "rempah",
+      "sambal",
+      "santan",
+      "saus",
+      "sirup",
+      "vanila"
+    ]
+  },
+  "alias": {
+    "rasa": {
+      "legit": "manis",
+      "manis": "manis",
+      "gurih": "gurih",
+      "asin": "gurih",
+      "asam": "asam",
+      "kecut": "asam",
+      "pahit": "pahit",
+      "seger": "segar",
+      "segar": "segar",
+      "fresh": "segar",
+      "creamy": "creamy",
+      "susu": "creamy",
+      "kental": "creamy",
+      "rempah": "rempah",
+      "hangat": "rempah"
+    },
+    "masak": {
+      "digoreng": "goreng",
+      "goreng": "goreng",
+      "gorengan": "goreng",
+      "dibakar": "bakar",
+      "bakar": "bakar",
+      "panggang": "panggang",
+      "dipanggang": "panggang",
+      "direbus": "rebus",
+      "rebus": "rebus",
+      "dikukus": "kukus",
+      "kukus": "kukus",
+      "ditumis": "tumis",
+      "tumis": "tumis",
+      "diseduh": "seduh",
+      "seduh": "seduh",
+      "jus": "blend",
+      "blend": "blend",
+      "diperas": "peras",
+      "peras": "peras"
+    },
+    "bahan": {
+      "daging sapi": "sapi",
+      "sapi": "sapi",
+      "beef": "sapi",
+      "iga": "sapi",
+      "buntut": "sapi",
+      "daging kambing": "kambing",
+      "kambing": "kambing",
+      "daging ayam": "ayam",
+      "ayam": "ayam",
+      "chicken": "ayam",
+      "bebek": "bebek",
+      "belut": "belut",
+      "tempe": "tempe",
+      "tahu": "tahu",
+      "telur": "telur",
+      "sayur": "sayur",
+      "sayuran": "sayur",
+      "kopi": "kopi",
+      "coffee": "kopi",
+      "teh": "teh",
+      "tea": "teh",
+      "susu": "susu",
+      "milk": "susu",
+      "coklat": "coklat",
+      "cokelat": "coklat",
+      "chocolate": "coklat",
+      "matcha": "matcha",
+      "jahe": "jahe",
+      "lemon": "lemon",
+      "jeruk": "jeruk",
+      "mangga": "mangga",
+      "alpukat": "alpukat",
+      "sirsak": "sirsak",
+      "stroberi": "stroberi",
+      "strawberry": "stroberi",
+      "jambu": "jambu",
+      "pisang": "pisang",
+      "singkong": "singkong",
+      "ubi": "ubi",
+      "jagung": "jagung",
+      "kelapa": "kelapa",
+      "mie": "mie",
+      "mi": "mie",
+      "nasi": "nasi",
+      "kacang": "kacang",
+      "soda": "soda",
+      "bersoda": "soda",
+      "gula aren": "gula_aren",
+      "aren": "gula_aren"
+    },
+    "bumbu": {
+      "santan": "santan",
+      "kecap": "kecap",
+      "bumbu kacang": "bumbu_kacang",
+      "saus kacang": "bumbu_kacang",
+      "kacang": "bumbu_kacang",
+      "sambal": "sambal",
+      "rempah": "rempah",
+      "kaldu": "kaldu",
+      "bawang": "bawang",
+      "jeruk nipis": "jeruk_nipis"
+    }
+  },
+  "kategori_alias": {
+    "gorengan": [
+      "gorengan",
+      "goreng-gorengan",
+      "cemilan goreng"
+    ],
+    "rebusan_kukus": [
+      "rebusan",
+      "kukus",
+      "rebusan kukus",
+      "rebus"
+    ],
+    "soto_sop": [
+      "soto",
+      "sroto",
+      "sop",
+      "soto sop",
+      "kuah"
+    ],
+    "nasi_mie": [
+      "nasi",
+      "mie",
+      "mi",
+      "nasi mie"
+    ],
+    "tongseng_gulai": [
+      "tongseng",
+      "gulai",
+      "tongseng gulai"
+    ],
+    "sate_bakar": [
+      "sate",
+      "bakar",
+      "sate bakar",
+      "goreng bakar"
+    ],
+    "cimplung": [
+      "cimplung",
+      "pisang",
+      "cimplung pisang"
+    ],
+    "espresso_based": [
+      "espresso",
+      "espresso based",
+      "kopi espresso",
+      "kopi susu"
+    ],
+    "manual_brew": [
+      "manual brew",
+      "kopi manual",
+      "seduh manual"
+    ],
+    "flavored_coffee": [
+      "flavored coffee",
+      "kopi rasa",
+      "kopi flavor",
+      "kopi flavored"
+    ],
+    "non_coffee": [
+      "non coffee"
+    ],
+    "flavored_tea": [
+      "flavored tea",
+      "teh rasa",
+      "teh flavor"
+    ],
+    "tradisional": [
+      "tradisional",
+      "minuman tradisional",
+      "jamu",
+      "wedang"
+    ],
+    "refreshments": [
+      "refreshment",
+      "refreshments",
+      "soda",
+      "squash",
+      "minuman segar"
+    ],
+    "jus_teh_air": [
+      "jus",
+      "juice",
+      "jus teh air"
+    ]
+  },
+  "item": {
+    "mendoan": {
+      "rasa": [
+        "gurih"
+      ],
+      "bahan": [
+        "tempe",
+        "tepung"
+      ],
+      "bumbu": [
+        "daun_bawang",
+        "kecap"
+      ],
+      "masak": "goreng",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "bakwan_jagung": {
+      "rasa": [
+        "gurih",
+        "manis"
+      ],
+      "bahan": [
+        "jagung",
+        "tepung"
+      ],
+      "bumbu": [],
+      "masak": "goreng",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "singkong_goreng": {
+      "rasa": [
+        "gurih"
+      ],
+      "bahan": [
+        "singkong"
+      ],
+      "bumbu": [],
+      "masak": "goreng",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "ubi_goreng": {
+      "rasa": [
+        "manis",
+        "gurih"
+      ],
+      "bahan": [
+        "ubi",
+        "tepung"
+      ],
+      "bumbu": [],
+      "masak": "goreng",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "cireng": {
+      "rasa": [
+        "gurih"
+      ],
+      "bahan": [
+        "tepung_aci"
+      ],
+      "bumbu": [],
+      "masak": "goreng",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "tahu_isi": {
+      "rasa": [
+        "gurih"
+      ],
+      "bahan": [
+        "tahu",
+        "sayur",
+        "tepung"
+      ],
+      "bumbu": [],
+      "masak": "goreng",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "tahu_bakso": {
+      "rasa": [
+        "gurih"
+      ],
+      "bahan": [
+        "tahu",
+        "bakso"
+      ],
+      "bumbu": [],
+      "masak": "goreng",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "rebusan_mix_plate": {
+      "rasa": [
+        "gurih",
+        "manis"
+      ],
+      "bahan": [
+        "jagung",
+        "talas",
+        "kacang",
+        "edamame"
+      ],
+      "bumbu": [],
+      "masak": "rebus",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "edamame": {
+      "rasa": [
+        "manis"
+      ],
+      "bahan": [
+        "edamame"
+      ],
+      "bumbu": [],
+      "masak": "rebus",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "jagung_manis_rebus": {
+      "rasa": [
+        "manis"
+      ],
+      "bahan": [
+        "jagung"
+      ],
+      "bumbu": [],
+      "masak": "rebus",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "talas_rebus": {
+      "rasa": [
+        "gurih"
+      ],
+      "bahan": [
+        "talas"
+      ],
+      "bumbu": [],
+      "masak": "rebus",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "kacang_rebus": {
+      "rasa": [
+        "gurih"
+      ],
+      "bahan": [
+        "kacang"
+      ],
+      "bumbu": [],
+      "masak": "rebus",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "sroto_ayam": {
+      "rasa": [
+        "gurih"
+      ],
+      "bahan": [
+        "ayam",
+        "ketupat",
+        "kerupuk"
+      ],
+      "bumbu": [
+        "bumbu_kacang",
+        "kaldu"
+      ],
+      "masak": "rebus",
+      "kuah": true,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "sroto_daging": {
+      "rasa": [
+        "gurih"
+      ],
+      "bahan": [
+        "sapi",
+        "ketupat",
+        "kerupuk"
+      ],
+      "bumbu": [
+        "bumbu_kacang",
+        "kaldu"
+      ],
+      "masak": "rebus",
+      "kuah": true,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "soto_betawi": {
+      "rasa": [
+        "gurih"
+      ],
+      "bahan": [
+        "sapi"
+      ],
+      "bumbu": [
+        "santan",
+        "rempah"
+      ],
+      "masak": "rebus",
+      "kuah": true,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "sop_buntut": {
+      "rasa": [
+        "gurih"
+      ],
+      "bahan": [
+        "sapi",
+        "wortel"
+      ],
+      "bumbu": [
+        "rempah",
+        "kaldu"
+      ],
+      "masak": "rebus",
+      "kuah": true,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "nasi_goreng_kampung": {
+      "rasa": [
+        "gurih"
+      ],
+      "bahan": [
+        "nasi"
+      ],
+      "bumbu": [
+        "bawang"
+      ],
+      "masak": "tumis",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "nasi_goreng_kambing": {
+      "rasa": [
+        "gurih"
+      ],
+      "bahan": [
+        "nasi",
+        "kambing"
+      ],
+      "bumbu": [
+        "rempah"
+      ],
+      "masak": "tumis",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "mie_goreng_jawa": {
+      "rasa": [
+        "gurih",
+        "manis"
+      ],
+      "bahan": [
+        "mie"
+      ],
+      "bumbu": [
+        "kecap",
+        "bawang"
+      ],
+      "masak": "tumis",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "mie_godog": {
+      "rasa": [
+        "gurih"
+      ],
+      "bahan": [
+        "mie"
+      ],
+      "bumbu": [
+        "kaldu"
+      ],
+      "masak": "rebus",
+      "kuah": true,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "tongseng_ayam": {
+      "rasa": [
+        "manis",
+        "gurih"
+      ],
+      "bahan": [
+        "ayam",
+        "kol",
+        "tomat"
+      ],
+      "bumbu": [
+        "kecap",
+        "rempah"
+      ],
+      "masak": "tumis",
+      "kuah": true,
+      "pedas": true,
+      "status": "asumsi"
+    },
+    "tongseng_sapi": {
+      "rasa": [
+        "manis",
+        "gurih"
+      ],
+      "bahan": [
+        "sapi",
+        "kol",
+        "tomat"
+      ],
+      "bumbu": [
+        "kecap",
+        "rempah"
+      ],
+      "masak": "tumis",
+      "kuah": true,
+      "pedas": true,
+      "status": "asumsi"
+    },
+    "tongseng_kambing": {
+      "rasa": [
+        "manis",
+        "gurih"
+      ],
+      "bahan": [
+        "kambing",
+        "kol",
+        "tomat"
+      ],
+      "bumbu": [
+        "kecap",
+        "rempah"
+      ],
+      "masak": "tumis",
+      "kuah": true,
+      "pedas": true,
+      "status": "asumsi"
+    },
+    "gulai_ayam": {
+      "rasa": [
+        "gurih"
+      ],
+      "bahan": [
+        "ayam"
+      ],
+      "bumbu": [
+        "santan",
+        "rempah"
+      ],
+      "masak": "rebus",
+      "kuah": true,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "gulai_sapi": {
+      "rasa": [
+        "gurih"
+      ],
+      "bahan": [
+        "sapi"
+      ],
+      "bumbu": [
+        "santan",
+        "rempah"
+      ],
+      "masak": "rebus",
+      "kuah": true,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "gulai_kambing": {
+      "rasa": [
+        "gurih"
+      ],
+      "bahan": [
+        "kambing"
+      ],
+      "bumbu": [
+        "santan",
+        "rempah"
+      ],
+      "masak": "rebus",
+      "kuah": true,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "ayam_goreng_kampung": {
+      "rasa": [
+        "gurih"
+      ],
+      "bahan": [
+        "ayam"
+      ],
+      "bumbu": [
+        "rempah"
+      ],
+      "masak": "goreng",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "bebek_goreng": {
+      "rasa": [
+        "gurih"
+      ],
+      "bahan": [
+        "bebek"
+      ],
+      "bumbu": [
+        "rempah"
+      ],
+      "masak": "goreng",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "belut_goreng": {
+      "rasa": [
+        "gurih"
+      ],
+      "bahan": [
+        "belut"
+      ],
+      "bumbu": [],
+      "masak": "goreng",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "iga_bakar": {
+      "rasa": [
+        "manis",
+        "gurih"
+      ],
+      "bahan": [
+        "sapi"
+      ],
+      "bumbu": [
+        "kecap",
+        "karamel"
+      ],
+      "masak": "bakar",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "sate_ayam": {
+      "rasa": [
+        "gurih",
+        "manis"
+      ],
+      "bahan": [
+        "ayam"
+      ],
+      "bumbu": [
+        "bumbu_kacang"
+      ],
+      "masak": "bakar",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "sate_kambing": {
+      "rasa": [
+        "gurih",
+        "manis"
+      ],
+      "bahan": [
+        "kambing"
+      ],
+      "bumbu": [
+        "kecap"
+      ],
+      "masak": "bakar",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "sate_taichan": {
+      "rasa": [
+        "gurih",
+        "asam"
+      ],
+      "bahan": [
+        "ayam"
+      ],
+      "bumbu": [
+        "sambal",
+        "jeruk_nipis"
+      ],
+      "masak": "bakar",
+      "kuah": false,
+      "pedas": true,
+      "status": "asumsi"
+    },
+    "pecel": {
+      "rasa": [
+        "gurih"
+      ],
+      "bahan": [
+        "sayur"
+      ],
+      "bumbu": [
+        "bumbu_kacang"
+      ],
+      "masak": "rebus",
+      "kuah": false,
+      "pedas": true,
+      "status": "asumsi"
+    },
+    "siomay": {
+      "rasa": [
+        "gurih"
+      ],
+      "bahan": [
+        "siomay",
+        "kentang",
+        "kol",
+        "telur"
+      ],
+      "bumbu": [
+        "bumbu_kacang",
+        "jeruk_limau"
+      ],
+      "masak": "kukus",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "steak_sapi": {
+      "rasa": [
+        "gurih"
+      ],
+      "bahan": [
+        "sapi",
+        "kentang",
+        "sayur"
+      ],
+      "bumbu": [
+        "saus"
+      ],
+      "masak": "panggang",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "cimplung_mix_plate": {
+      "rasa": [
+        "manis"
+      ],
+      "bahan": [
+        "kelapa",
+        "ubi",
+        "singkong",
+        "pisang"
+      ],
+      "bumbu": [
+        "nira"
+      ],
+      "masak": "rebus",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "cimplung_kelapa": {
+      "rasa": [
+        "manis"
+      ],
+      "bahan": [
+        "kelapa"
+      ],
+      "bumbu": [
+        "nira"
+      ],
+      "masak": "rebus",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "cimplung_singkong": {
+      "rasa": [
+        "manis"
+      ],
+      "bahan": [
+        "singkong"
+      ],
+      "bumbu": [
+        "nira"
+      ],
+      "masak": "rebus",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "cimplung_ubi": {
+      "rasa": [
+        "manis"
+      ],
+      "bahan": [
+        "ubi"
+      ],
+      "bumbu": [
+        "nira"
+      ],
+      "masak": "rebus",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "cimplung_pisang": {
+      "rasa": [
+        "manis"
+      ],
+      "bahan": [
+        "pisang"
+      ],
+      "bumbu": [
+        "nira"
+      ],
+      "masak": "rebus",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "pisang_goreng": {
+      "rasa": [
+        "manis"
+      ],
+      "bahan": [
+        "pisang",
+        "tepung"
+      ],
+      "bumbu": [],
+      "masak": "goreng",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "pisang_coklat": {
+      "rasa": [
+        "manis"
+      ],
+      "bahan": [
+        "pisang",
+        "coklat"
+      ],
+      "bumbu": [],
+      "masak": null,
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "espresso": {
+      "rasa": [
+        "pahit"
+      ],
+      "bahan": [
+        "kopi"
+      ],
+      "bumbu": [],
+      "masak": "seduh",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "americano": {
+      "rasa": [
+        "pahit"
+      ],
+      "bahan": [
+        "kopi"
+      ],
+      "bumbu": [],
+      "masak": "seduh",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "long_black": {
+      "rasa": [
+        "pahit"
+      ],
+      "bahan": [
+        "kopi"
+      ],
+      "bumbu": [],
+      "masak": "seduh",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "cappuccino": {
+      "rasa": [
+        "creamy",
+        "pahit"
+      ],
+      "bahan": [
+        "kopi",
+        "susu"
+      ],
+      "bumbu": [],
+      "masak": "seduh",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "latte": {
+      "rasa": [
+        "creamy"
+      ],
+      "bahan": [
+        "kopi",
+        "susu"
+      ],
+      "bumbu": [],
+      "masak": "seduh",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "mochaccino": {
+      "rasa": [
+        "manis",
+        "creamy"
+      ],
+      "bahan": [
+        "kopi",
+        "susu",
+        "coklat"
+      ],
+      "bumbu": [],
+      "masak": "seduh",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "v60": {
+      "rasa": [
+        "pahit"
+      ],
+      "bahan": [
+        "kopi"
+      ],
+      "bumbu": [],
+      "masak": "seduh",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "v60_japanese": {
+      "rasa": [
+        "segar",
+        "pahit"
+      ],
+      "bahan": [
+        "kopi"
+      ],
+      "bumbu": [],
+      "masak": "seduh",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "french_press": {
+      "rasa": [
+        "pahit"
+      ],
+      "bahan": [
+        "kopi"
+      ],
+      "bumbu": [],
+      "masak": "seduh",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "kopi_tubruk": {
+      "rasa": [
+        "pahit"
+      ],
+      "bahan": [
+        "kopi"
+      ],
+      "bumbu": [],
+      "masak": "seduh",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "aren_latte": {
+      "rasa": [
+        "manis",
+        "creamy"
+      ],
+      "bahan": [
+        "kopi",
+        "susu",
+        "gula_aren"
+      ],
+      "bumbu": [],
+      "masak": "seduh",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "butterscotch_latte": {
+      "rasa": [
+        "manis",
+        "creamy"
+      ],
+      "bahan": [
+        "kopi",
+        "susu"
+      ],
+      "bumbu": [
+        "butterscotch"
+      ],
+      "masak": "seduh",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "creamy_butterscotch": {
+      "rasa": [
+        "manis",
+        "creamy"
+      ],
+      "bahan": [
+        "kopi",
+        "susu"
+      ],
+      "bumbu": [
+        "butterscotch"
+      ],
+      "masak": "seduh",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "irish_black_shot": {
+      "rasa": [
+        "pahit"
+      ],
+      "bahan": [
+        "kopi"
+      ],
+      "bumbu": [
+        "irish_cream"
+      ],
+      "masak": "seduh",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "cappuccino_freddo": {
+      "rasa": [
+        "creamy",
+        "segar"
+      ],
+      "bahan": [
+        "kopi",
+        "susu"
+      ],
+      "bumbu": [],
+      "masak": "seduh",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "matcha_latte": {
+      "rasa": [
+        "creamy",
+        "pahit"
+      ],
+      "bahan": [
+        "matcha",
+        "susu"
+      ],
+      "bumbu": [],
+      "masak": "campur",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "matcha_berry_latte": {
+      "rasa": [
+        "manis",
+        "asam"
+      ],
+      "bahan": [
+        "matcha",
+        "susu",
+        "berry"
+      ],
+      "bumbu": [],
+      "masak": "campur",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "choco_butter_cream": {
+      "rasa": [
+        "manis",
+        "creamy"
+      ],
+      "bahan": [
+        "coklat",
+        "susu"
+      ],
+      "bumbu": [
+        "butterscotch"
+      ],
+      "masak": "campur",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "lemon_mint": {
+      "rasa": [
+        "segar",
+        "asam"
+      ],
+      "bahan": [
+        "teh",
+        "lemon",
+        "mint"
+      ],
+      "bumbu": [],
+      "masak": "seduh",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "tropical_dream": {
+      "rasa": [
+        "manis"
+      ],
+      "bahan": [
+        "teh",
+        "buah"
+      ],
+      "bumbu": [],
+      "masak": "seduh",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "vanilla_rose": {
+      "rasa": [
+        "manis"
+      ],
+      "bahan": [
+        "teh"
+      ],
+      "bumbu": [
+        "vanila",
+        "mawar"
+      ],
+      "masak": "seduh",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "ginger_vanilla": {
+      "rasa": [
+        "manis",
+        "rempah"
+      ],
+      "bahan": [
+        "teh",
+        "jahe"
+      ],
+      "bumbu": [
+        "vanila"
+      ],
+      "masak": "seduh",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "dawet_banjarnegara": {
+      "rasa": [
+        "manis",
+        "gurih"
+      ],
+      "bahan": [
+        "cendol",
+        "santan",
+        "gula_merah"
+      ],
+      "bumbu": [],
+      "masak": "campur",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "legen_siwalan": {
+      "rasa": [
+        "manis"
+      ],
+      "bahan": [
+        "nira"
+      ],
+      "bumbu": [],
+      "masak": "campur",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "kunyit_asem": {
+      "rasa": [
+        "asam",
+        "manis"
+      ],
+      "bahan": [
+        "kunyit",
+        "asam_jawa"
+      ],
+      "bumbu": [
+        "rempah"
+      ],
+      "masak": "campur",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "beras_kencur": {
+      "rasa": [
+        "manis",
+        "rempah"
+      ],
+      "bahan": [
+        "beras",
+        "kencur"
+      ],
+      "bumbu": [],
+      "masak": "campur",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "jahe_susu": {
+      "rasa": [
+        "manis",
+        "rempah"
+      ],
+      "bahan": [
+        "jahe",
+        "susu"
+      ],
+      "bumbu": [],
+      "masak": "seduh",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "jahe_sereh": {
+      "rasa": [
+        "rempah"
+      ],
+      "bahan": [
+        "jahe",
+        "serai"
+      ],
+      "bumbu": [],
+      "masak": "seduh",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "bir_pletok": {
+      "rasa": [
+        "rempah"
+      ],
+      "bahan": [
+        "jahe",
+        "serai",
+        "secang"
+      ],
+      "bumbu": [
+        "rempah"
+      ],
+      "masak": "seduh",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "es_timun_serut": {
+      "rasa": [
+        "segar",
+        "manis"
+      ],
+      "bahan": [
+        "timun",
+        "selasih"
+      ],
+      "bumbu": [
+        "sirup"
+      ],
+      "masak": "campur",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "teh_poci": {
+      "rasa": [
+        "manis",
+        "pahit"
+      ],
+      "bahan": [
+        "teh"
+      ],
+      "bumbu": [],
+      "masak": "seduh",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "lychee_squash": {
+      "rasa": [
+        "manis",
+        "segar"
+      ],
+      "bahan": [
+        "leci",
+        "soda"
+      ],
+      "bumbu": [
+        "sirup"
+      ],
+      "masak": "campur",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "blue_citrus": {
+      "rasa": [
+        "segar",
+        "asam"
+      ],
+      "bahan": [
+        "jeruk",
+        "lemon",
+        "soda"
+      ],
+      "bumbu": [
+        "sirup"
+      ],
+      "masak": "campur",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "stroberi_squash": {
+      "rasa": [
+        "manis",
+        "asam"
+      ],
+      "bahan": [
+        "stroberi",
+        "soda"
+      ],
+      "bumbu": [
+        "sirup"
+      ],
+      "masak": "campur",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "lemon_squash": {
+      "rasa": [
+        "asam",
+        "manis"
+      ],
+      "bahan": [
+        "lemon",
+        "soda"
+      ],
+      "bumbu": [
+        "sirup"
+      ],
+      "masak": "campur",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "jus_mangga": {
+      "rasa": [
+        "manis"
+      ],
+      "bahan": [
+        "mangga"
+      ],
+      "bumbu": [],
+      "masak": "blend",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "jus_alpukat": {
+      "rasa": [
+        "creamy"
+      ],
+      "bahan": [
+        "alpukat"
+      ],
+      "bumbu": [],
+      "masak": "blend",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "jus_sirsak": {
+      "rasa": [
+        "manis",
+        "asam"
+      ],
+      "bahan": [
+        "sirsak"
+      ],
+      "bumbu": [],
+      "masak": "blend",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "jus_strawberry": {
+      "rasa": [
+        "manis",
+        "asam"
+      ],
+      "bahan": [
+        "stroberi"
+      ],
+      "bumbu": [],
+      "masak": "blend",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "jus_jambu": {
+      "rasa": [
+        "manis"
+      ],
+      "bahan": [
+        "jambu"
+      ],
+      "bumbu": [],
+      "masak": "blend",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "jeruk_peras": {
+      "rasa": [
+        "asam",
+        "manis"
+      ],
+      "bahan": [
+        "jeruk"
+      ],
+      "bumbu": [],
+      "masak": "peras",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "lemon_tea": {
+      "rasa": [
+        "asam",
+        "segar"
+      ],
+      "bahan": [
+        "teh",
+        "lemon"
+      ],
+      "bumbu": [],
+      "masak": "seduh",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "teh_manis": {
+      "rasa": [
+        "manis"
+      ],
+      "bahan": [
+        "teh"
+      ],
+      "bumbu": [
+        "gula"
+      ],
+      "masak": "seduh",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "teh_tawar": {
+      "rasa": [],
+      "bahan": [
+        "teh"
+      ],
+      "bumbu": [],
+      "masak": "seduh",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "air_mineral": {
+      "rasa": [],
+      "bahan": [
+        "air"
+      ],
+      "bumbu": [],
+      "masak": null,
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    },
+    "nasi_putih": {
+      "rasa": [
+        "gurih"
+      ],
+      "bahan": [
+        "nasi",
+        "beras"
+      ],
+      "bumbu": [],
+      "masak": "rebus",
+      "kuah": false,
+      "pedas": false,
+      "status": "asumsi"
+    }
+  }
+}

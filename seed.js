@@ -186,6 +186,11 @@ function main() {
   }
   console.log('✅ Verifikasi: semua nama menu & alias langsung cocok ke 1 menu (tidak ada yang ambigu).');
 
+  // Atribut menu (atribut_menu.json) hanya diperingatkan, tidak menggagalkan seed: menu tanpa atribut tetap bisa dipesan
+  const masalahAtribut = require('./atribut').validasi(db.getAllMenu().map((m) => m.id));
+  if (masalahAtribut.length > 0) console.warn(`⚠️  atribut_menu.json: ${masalahAtribut.length} masalah: ${masalahAtribut.join('; ')}`);
+  else console.log('✅ Atribut menu lengkap untuk semua menu.');
+
   console.log('🎉 Seed selesai.');
 }
 
