@@ -218,37 +218,30 @@ function petaHalaman() {
 
 const fileHalaman = (n) => path.join(DIR_HALAMAN, `p${String(n).padStart(2, '0')}.jpg`);
 
-// Halaman yang BARU SAJA dikirim (beberapa detik) tidak dikirim dobel dalam satu permintaan (misal gorengan + rebusan
-// sama-sama di halaman 3). Permintaan baru dari customer selalu dikirim lagi, supaya dia tidak perlu scroll ke atas.
-const JENDELA_DOBEL_MS = 30 * 1000;
-const halamanBaruTerkirim = new Map(); // jid -> Map(nomor -> waktu)
-
-// Kirim daftar halaman (nomor). Caption hanya kalau diisi di halaman_menu.json (kosong = tanpa caption).
-async function kirimHalamanMenu(jid, daftarHalaman) {
+// Kirim daftar halaman (nomor). `batch` (Set) hanya dipakai untuk satu permintaan yang memuat beberapa kategori
+// (misal gorengan + rebusan sama-sama di halaman 3): halaman yang sudah ada di batch itu tidak dikirim dobel.
+// Permintaan baru dari customer SELALU dikirim lagi, tidak peduli kapan terakhir dikirim, supaya dia tidak perlu scroll ke atas.
+// Caption hanya kalau diisi di halaman_menu.json (kosong = tanpa caption).
+async function kirimHalamanMenu(jid, daftarHalaman, batch = null) {
   const peta = petaHalaman();
-  const riwayat = halamanBaruTerkirim.get(jid) || new Map();
-  const sekarang = Date.now();
-  for (const [n, t] of riwayat) if (sekarang - t > JENDELA_DOBEL_MS) riwayat.delete(n);
-  halamanBaruTerkirim.set(jid, riwayat);
-
   let terkirim = 0; let dilewati = 0; let adaFile = false;
   for (const n of daftarHalaman) {
     if (!fs.existsSync(fileHalaman(n))) continue;
     adaFile = true;
-    if (riwayat.has(n)) { dilewati++; continue; }
+    if (batch && batch.has(n)) { dilewati++; continue; }
     const caption = peta?.caption_halaman?.[String(n)] || undefined;
     const ok = await kirimGambarJikaAda(jid, fileHalaman(n), caption);
-    if (ok) { terkirim++; riwayat.set(n, Date.now()); await tunggu(400); }
+    if (ok) { terkirim++; if (batch) batch.add(n); await tunggu(400); }
   }
   return { terkirim, dilewati, adaFile };
 }
 
 // Kirim halaman untuk 1 kategori. Return 'kartu' (terkirim atau sudah pernah), atau 'tidak_ada' kalau tidak ada gambar yang cocok.
-async function kirimKartuKategori(jid, kategori) {
+async function kirimKartuKategori(jid, kategori, batch = null) {
   const peta = petaHalaman();
   const halaman = peta?.kategori?.[kategori.id];
   if (halaman && halaman.length > 0) {
-    const hasil = await kirimHalamanMenu(jid, halaman);
+    const hasil = await kirimHalamanMenu(jid, halaman, batch);
     if (hasil.adaFile) return 'kartu';
   }
   // Cadangan: kartu kategori lama / foto sampul (kalau halaman PDF belum diekspor)
@@ -268,7 +261,6 @@ async function kirimKartuKategori(jid, kategori) {
 async function kirimSemuaKartuKategori(jid) {
   const peta = petaHalaman();
   if (peta?.buku_menu?.length) {
-    halamanBaruTerkirim.delete(jid); // minta menu lengkap = kirim semuanya
     const hasil = await kirimHalamanMenu(jid, peta.buku_menu);
     if (hasil.adaFile) return true;
   }
