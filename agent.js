@@ -122,6 +122,7 @@ function rekomendasiUpsell(fase) {
 
 // Dipanggil setiap ada item masuk draft: tandai fase item itu selesai, tentukan jalur kalau belum.
 function catatFaseDariItem(jid, items) {
+  return; // alur fase dihentikan (customer bebas memesan), state jalur/fase tidak dipakai lagi
   const alur = db.getAlur(jid);
   if (alur.tutup) return;
   const faseItem = items.map((i) => faseDariKategoriId(i.menu.kategori_id)).filter(Boolean);
@@ -184,8 +185,11 @@ function buatKonteksDinamisCustomer(jid) {
   const customer = db.getCustomer(jid);
 
   if (db.getChatHistory(jid, 1).length === 0) {
-    baris.push(`- Ini chat PERTAMA customer. Balas SATU pesan sambutan (pengecualian aturan 1 kalimat) dengan format: "Sugeng rawuh di The Banjoemas Resto & Cafe, Mas/Mbak. Aku ${config.namaAi()}" disambung 1 kalimat hangat soal resto khas Banyumas; lalu 1 kalimat tanya kedatangan; lalu pilihannya sebagai DAFTAR BERNOMOR, satu opsi per baris: "1. Sudah di resto" dan "2. Datang nanti (sebutkan jamnya, misal 19.30)". JANGAN tanya dine in/take away di awal (ditanya di akhir, sebelum rincian). Jangan kirim menu dulu dan jangan tanya makan berat/nyemil dulu. Kalau customer langsung memesan menu atau menyebut kategori/menu tertentu (misal "minuman tradisional", "gorengan", lihat hasil tool di atas), sapa 1 kalimat singkat saja lalu layani itu; JANGAN tanya kedatangan sekarang (nanti ditanya saat rincian). Kalau customer langsung bertanya hal lain (info resto, jam buka, booking, menu), jawab itu dulu.`);
+    baris.push(`- Ini chat PERTAMA customer. Balas SATU pesan sambutan (pengecualian aturan 1 kalimat): "Sugeng rawuh di The Banjoemas Resto & Cafe, Mas/Mbak. Aku ${config.namaAi()}" disambung 1 kalimat tanya singkat, misal "Mau lihat menu dulu, atau langsung pesan?". JANGAN tanya posisi/kedatangan (customer yang chat pertama kali dianggap sudah duduk di resto), JANGAN tanya dine in/take away, JANGAN tanya makan berat/nyemil, JANGAN kirim menu kalau tidak diminta. Kalau customer langsung memesan, menyebut kategori/menu, atau bertanya hal lain (info resto, jam buka, booking), sapa 1 kalimat singkat lalu LAYANI itu.`);
   }
+
+  // Tanggal hari ini (untuk booking: "besok", "sabtu depan" harus dihitung dari sini)
+  baris.push(`- HARI INI: ${config.NAMA_HARI[config.statusBuka().hari]}, ${tanggalBot()} (zona Jakarta). Hitung "besok", "lusa", "sabtu ini/depan" dari tanggal ini, tahun ${tanggalBot().slice(0, 4)}.`);
 
   // Jam operasional: dicek kode; AI hanya perlu tahu kondisinya
   const sb = config.statusBuka();
@@ -208,12 +212,8 @@ function buatKonteksDinamisCustomer(jid) {
       : '- Rating customer rendah, bot sudah menanyakan kendalanya dan menunggu cerita customer.');
   }
 
-  // Layanan & rencana kedatangan (ditanya di awal)
-  if (!customer.rencana_datang) {
-    baris.push('- ONBOARDING: kedatangan belum ditanya/dijawab. Tanyakan sebagai DAFTAR BERNOMOR ("1. Sudah di resto" / "2. Datang nanti (sebutkan jamnya)"). Jawaban -> panggil atur_layanan dengan kedatangan ("sekarang" atau jam format 24 jam HH:MM, misal "19:30"). JANGAN tanya dine in/take away di awal. Selama kedatangan belum dijawab, JANGAN tanya makan berat/nyemil dulu. PILIHAN SPESIFIK MENANG: kalau customer sudah menyebut kategori/menu tertentu atau langsung memesan, LAYANI itu dulu (kartu kategori / catat pesanan), JANGAN tanya kedatangan atau jalur; kedatangan ditanya nanti saat rincian bersama nama/meja.');
-  } else {
-    baris.push(`- Rencana kedatangan: ${customer.rencana_datang === 'SEKARANG' ? 'sudah di resto' : `datang jam ${customer.rencana_datang}`}. ${customer.layanan_ditanya ? `Layanan: ${customer.tipe_default === 'TAKE_AWAY' ? 'TAKE AWAY' : 'DINE IN'} (menu yang disebut beda, misal "iga take away", ditandai sendiri per menu).` : 'Dine in atau take away BELUM ditanya: ditanya sekali di akhir, tepat sebelum rincian (sistem yang menyuruhmu bertanya lewat hasil tampilkan_rincian_order).'}`);
-  }
+  // Kedatangan & layanan: default sudah di resto + dine in. Tidak ada yang ditanyakan.
+  baris.push(`- Customer ${customer.rencana_datang && customer.rencana_datang !== 'SEKARANG' ? `bilang akan datang jam ${customer.rencana_datang} (pre-order)` : 'sudah di resto'}. Layanan: ${customer.tipe_default === 'TAKE_AWAY' ? 'TAKE AWAY (customer yang memintanya)' : 'DINE IN (default, JANGAN ditanyakan)'}. Take away hanya kalau customer sendiri minta ("bungkus", "take away", "iga-nya dibungkus"): catat per menu di buat_order atau ubah_tipe_item, atau atur_layanan take_away kalau semuanya.`);
 
   baris.push(customer.nomor_meja
     ? `- Nomor meja customer: ${customer.nomor_meja}.`
@@ -237,17 +237,9 @@ function buatKonteksDinamisCustomer(jid) {
     baris.push(`- Pesanan ${nomorPesanan(p)} sudah lunas, untuk datang jam ${p.jam_datang}: ${ket}. Kalau customer bilang tidak jadi datang, panggil jadwal_kedatangan aksi "batal" (uang yang sudah dibayar TIDAK dikembalikan, sampaikan santai dan sopan).`);
   }
 
-  if (alur.tutup) {
-    baris.push('- Alur fase SUDAH SELESAI (sudah bayar). Pesanan tambahan diproses biasa tanpa fase: rangkum lalu minta konfirmasi.');
-  } else if (!alur.jalur) {
-    baris.push('- Customer BELUM pilih jalur. Kalau belum ada pesanan, tanya mau mulai dari mana dengan DAFTAR BERNOMOR ("1. Makan berat" / "2. Nyemil"). Begitu dijawab, panggil pilih_jalur. Kalau customer malah tanya favorit/rekomendasi, JAWAB dulu lewat rekomendasi_menu (jangan balik menanyakan jalur).');
-  } else {
-    const fase = faseBerikutnya(alur);
-    baris.push(`- Alur fase: jalur ${alur.jalur === 'berat' ? 'MAKAN BERAT (berat -> minuman -> camilan)' : 'NYEMIL (camilan -> minuman -> berat)'}; sudah: ${alur.selesai.map((f) => LABEL_FASE[f]).join(', ') || '-'}; ${fase ? `fase berikutnya: ${LABEL_FASE[fase].toUpperCase()}.` : 'semua fase sudah lewat, lanjut rincian & bayar.'}`);
-    baris.push(fase
-      ? '- Kalau customer menolak tawaran/pertanyaan tambahan ("nggak", "udah", "udah cukup", "nggak dulu", "nggak usah minum"), WAJIB panggil lewati_fase, JANGAN langsung tampilkan_rincian_order: sistem yang menentukan kapan rincian (setelah satu tawaran lagi). Hanya "langsung bayar aja" yang boleh langsung rincian (lewati_fase dengan langsung_bayar=true).'
-      : '- Kalau customer bilang tidak ada tambahan lagi, panggil lewati_fase (sistem lanjut ke rincian).');
-  }
+  // Tidak ada urutan fase (camilan/minum/berat). Customer bebas pesan, tanya, atau loncat kapan saja.
+  void alur;
+  baris.push('- Alur BEBAS: customer boleh pesan apa saja, kapan saja, melihat menu bagian mana saja, atau bertanya hal acak, lalu kembali memesan. Tidak ada urutan wajib. Kalau customer bilang sudah cukup / itu aja / udah / langsung bayar / minta tagihan -> langsung tampilkan_rincian_order (jangan menawarkan fase atau menu lagi).');
 
   const klar = getKlarifikasiPending(jid);
   if (klar && klar.length > 0) {
@@ -313,10 +305,10 @@ function buatBlokInfoResto() {
     const a = [];
     // Layanan diatur di kode (bukan dari menu.json): dine in + take away tanpa biaya tambahan, tanpa delivery.
     // Pesanan boleh dibuat sebelum datang (pre-order), tiap pesanan punya nomor pesanan harian.
-    a.push('Layanan: dine in dan take away (TANPA biaya kemasan), boleh campur per menu. Dine in atau take away ditanya SEKALI di akhir, sebelum rincian. TIDAK ada delivery. Customer boleh memesan sebelum datang (pre-order), pembayaran QRIS di awal. Uang yang sudah dibayar tidak dikembalikan kalau customer tidak jadi datang. Pengembalian uang (misal menu habis) hanya tunai di kasir.');
-    a.push(`Harga menu BELUM termasuk pajak: ditambah PPN ${config.ppnPersen()}%, tanpa service charge, semua menu kena PPN (dine in maupun take away). Rincian selalu menampilkan Subtotal, PPN, Grand Total.`);
+    a.push('Layanan: dine in (DEFAULT, tidak ditanyakan) dan take away (hanya kalau customer yang minta, TANPA biaya kemasan), boleh campur per menu. TIDAK ada delivery. Customer boleh memesan sebelum datang (pre-order), pembayaran QRIS di awal. Uang yang sudah dibayar tidak dikembalikan kalau customer tidak jadi datang. Pengembalian uang (misal menu habis) hanya tunai di kasir.');
+    a.push(`Harga menu BELUM termasuk pajak: ditambah PPN ${config.ppnPersen()}%, tanpa service charge, semua menu kena PPN (dine in maupun take away). Rincian selalu menampilkan Subtotal, PPN, Grand Total. JANGAN menyebut PPN/pajak kalau customer tidak menanyakannya (kecuali di rincian).`);
     a.push('Pembayaran: DEFAULT bayar dulu lewat QRIS. QR dibuat kasir per pesanan (nominal persis grand total), jadi setelah customer setuju rincian, QR dikirim begitu kasir selesai membuatnya (beberapa menit). OPEN BILL (bayar di akhir) HANYA kalau customer sendiri memintanya dan makan di tempat (take away dan pre-order tetap bayar dulu): jangan menawarkannya.');
-    a.push('Nasi putih Rp10.000 per porsi (menu "Nasi Putih"). Tongseng dan menu lain BELUM termasuk nasi. Kalau customer memesan tongseng/sop/iga/lauk berat tanpa nasi, tawarkan nasi putih sekali dengan ringan.');
+    a.push('Nasi putih Rp10.000 per porsi (menu "Nasi Putih"). Tongseng dan menu lain BELUM termasuk nasi. Penawaran nasi diatur sistem lewat hasil buat_order (tawarkan_nasi).');
     for (const k of ['harga', 'nasi', 'sambal', 'ubah_batal']) {
       if (typeof aturan[k] === 'string') a.push(aturan[k]);
     }
@@ -335,7 +327,7 @@ function buatBlokInfoResto() {
 
 // ========== TOOLS — CUSTOMER ==========
 
-const TOOLS_CUSTOMER = [
+const TOOLS_CUSTOMER_SEMUA = [
   {
     type: 'function',
     function: {
@@ -667,7 +659,7 @@ const TOOLS_CUSTOMER = [
     type: 'function',
     function: {
       name: 'atur_layanan',
-      description: 'Catat rencana kedatangan customer (sudah di resto / datang jam berapa) dan jenis layanan (dine in / take away). Dipakai saat customer menjawab pertanyaan kedatangan, saat customer menjawab pertanyaan "dine in atau take away" (ditanya sekali di akhir, sebelum rincian), atau kapan pun dia mengubahnya. Isi hanya yang baru dijawab.',
+      description: 'Catat kedatangan dan jenis layanan HANYA kalau customer sendiri menyebutnya: dia bilang akan datang jam sekian (kedatangan HH:MM, pre-order), atau minta take away ("bungkus semua", "take away aja" -> tipe take_away; sebagian saja -> campur lalu ubah_tipe_item per menu). Default-nya sudah di resto dan dine in, JANGAN menanyakan keduanya ke customer. Isi hanya yang baru disebut.',
       parameters: {
         type: 'object',
         properties: {
@@ -808,6 +800,11 @@ const TOOLS_CUSTOMER = [
     },
   },
 ];
+
+// Alur 3 fase (camilan -> minuman -> berat) dihentikan: customer bebas memesan dan bertanya kapan saja.
+// Tool pilih_jalur dan lewati_fase tidak lagi ditawarkan ke AI (kodenya tetap ada, tidak terpakai).
+const TOOLS_DIHENTIKAN = new Set(['pilih_jalur', 'lewati_fase']);
+const TOOLS_CUSTOMER = TOOLS_CUSTOMER_SEMUA.filter((t) => !TOOLS_DIHENTIKAN.has(t.function.name));
 
 // ========== TOOLS — KASIR ==========
 
@@ -1086,6 +1083,13 @@ const TOOLS_OPERATOR = [
 
 const SYSTEM_PROMPT_CUSTOMER = `Kamu adalah "Cimendo", teman ngobrol dan pelayan digital di The Banjoemas Resto & Cafe (resto khas Banyumas/Jawa Tengah). Nama restonya tetap "The Banjoemas Resto & Cafe", Cimendo adalah namamu. Kamu ramah, cekatan, hangat ke tamu, dan terasa seperti pelayan sungguhan, bukan mesin.
 
+CUSTOMER PLIN-PLAN (SERING TERJADI):
+- Customer sering berubah pikiran, muter-muter, balik ke pilihan awal, atau membatalkan lalu memesan lagi ("ga jadi mie, nasgor aja", "eh yang tadi aja deh", "yaudah itu aja", "bentar bentar"). SELALU ikuti pesan TERBARU dan keadaan draft di STATE: ga jadi X -> hapus_item_order; balik ke Y -> buat_order lagi untuk Y; ganti X ke Y -> hapus X lalu buat Y.
+- Kalau ada pertanyaan menggantung (misal "nasi gorengnya yang mana?") tapi customer sudah ganti ke hal lain, anggap pertanyaan itu batal dan layani yang terbaru.
+- Kalau customer merujuk menu yang tadi dia pesan/sebut ("yang tadi", "yg mie tadi", "balik ke yang awal"), tulis NAMA LENGKAP menu itu (dari riwayat chat atau draft) di teks_mentah buat_order, misal "mie godog 1", JANGAN menyalin kata ambigunya ("mie") karena akan ditanya ulang.
+- JANGAN PERNAH membalas "siap / oke / x1 ya" untuk sebuah menu tanpa memanggil tool pencatatnya di giliran yang sama. Kalau tidak yakin maksudnya, tanya satu kalimat pendek.
+- "ada apa aja", "jual apa aja", "apa aja yang ada" = minta lihat menu (lihat_menu tanpa parameter), bukan pertanyaan balik.
+
 PAHAMI KETIKAN ANEH (PENTING):
 - Customer sering mengetik singkat, typo, campur singkatan, atau tidak baku ("cemilan", "camilan", "nyemil", "snack", "nasgor", "es teh pocinya 2", "mau yg manis2"). Pahami maksudnya semaksimal mungkin dan SESUAIKAN diri, jangan kaku, jangan minta customer mengetik ulang dengan format tertentu.
 - Sinonim kelompok: camilan = cemilan/camil/snack/nyemil/ngemil/jajan; makan berat = menu utama/berat/makanan berat; minuman = minum/haus/drink. Kalau customer menyebut itu, tetap panggil lihat_menu dengan kelompok yang sesuai.
@@ -1116,41 +1120,37 @@ Bebas ngobrol apa saja yang nyambung ke: menu & harga, detail menu (bahan, pedas
 ATURAN RESTO PENTING:
 - Fakta layanan, harga, nasi, sambal, dan aturan ubah/batal ada di blok "INFO RESTO DAN ATURAN" di akhir prompt. Ikuti blok itu.
 - Nomor meja DAN nama WAJIB ada sebelum QR dikirim. Kalau salah satunya belum ada saat masuk rincian/bayar, tanyakan SEKALIGUS dalam 1 kalimat (misal "Boleh tau nomor meja dan namanya, Mas/Mbak?"). Nama dipakai kasir untuk mencocokkan pembayaran. Kalau meja yang disebut ternyata sedang dipakai orang lain (hasil konfirmasi_kedatangan gagal), minta customer cek ulang nomor mejanya.
-- Kalau customer pesan lauk/menu berat, sebutkan secara natural soal nasi sesuai aturan (TAPI JANGAN tawarkan nasi putih sebagai menu kalau belum ada di data menu).
+- Nasi putih (Rp10.000) ditawarkan lewat hasil buat_order (tawarkan_nasi), lihat bagian ALUR PESAN. Jangan menawarkan nasi di tempat lain.
 - JANGAN PERNAH menjamin suatu menu bebas alergen tertentu, walau datanya tidak menyebut alergen itu. Kalau customer tanya soal alergi spesifik atau bilang punya alergi, jawab jujur bahwa data alergen berdasar resep umum dan perlu dipastikan ke dapur, lalu panggil forward_pesan_ke_kasir.
 
 FORMAT PILIHAN (WAJIB):
-- Setiap kali customer harus memilih di antara 2 atau lebih opsi (kedatangan, makan berat/nyemil, kopi/non-kopi, tambah/lanjut, Mas/Mbak, panas/dingin, varian menu, dll), tampilkan sebagai DAFTAR BERNOMOR: 1 kalimat tanya pendek, lalu satu opsi per baris ("1. ...", "2. ..."). JANGAN menaruh pilihan di dalam paragraf, karena sulit dibaca. Tujuannya customer cukup membalas SATU kata atau satu angka.
+- Setiap kali customer harus memilih di antara 2 atau lebih opsi (kopi/non-kopi, Mas/Mbak, panas/dingin, varian menu, kategori yang dimaksud, dll), tampilkan sebagai DAFTAR BERNOMOR: 1 kalimat tanya pendek, lalu satu opsi per baris ("1. ...", "2. ..."). JANGAN menaruh pilihan di dalam paragraf, karena sulit dibaca. Tujuannya customer cukup membalas SATU kata atau satu angka.
 - Kalau customer membalas dengan angka ("2") atau satu kata, artikan sesuai daftar yang kamu kirim di pesan sebelumnya.
-- Balasan customer atas daftar pilihan HARUS memicu tool yang sesuai di giliran yang SAMA (pilih_jalur, lihat_menu, buat_order, simpan_nama, atur_layanan, lewati_fase). JANGAN hanya membalas teks konfirmasi ("siap", "mantap") tanpa memanggil tool, karena pilihannya tidak akan tercatat.
+- Balasan customer atas daftar pilihan HARUS memicu tool yang sesuai di giliran yang SAMA (lihat_menu, buat_order, simpan_nama, atur_layanan). JANGAN hanya membalas teks konfirmasi ("siap", "mantap") tanpa memanggil tool, karena pilihannya tidak akan tercatat.
 - JAWABAN AMBIGU: kalau maksud customer tidak jelas (misal "yg lain deh", "yang lain", "apa aja", "terserah", "yang itu"), JANGAN langsung memanggil tool dan JANGAN menebak. Tanya dulu dengan DAFTAR BERNOMOR (maks 4 opsi) apa yang dimaksud, baru panggil tool setelah jelas. Contoh setelah rekomendasi, customer bilang "yg lain deh": tanya "Mau lihat yang mana?" 1. Semua menu makan berat (kartu), 2. Pilih kategori (Sate/Goreng/Bakar, Nasi & Mie, ...), 3. Rekomendasi lain. Menu andalan hanya sebagian kecil dari seluruh menu, jangan pernah bilang "cuma ini yang tersedia".
-- Kalau customer tanya favorit / rekomendasi / "enaknya apa" -> JAWAB dulu lewat rekomendasi_menu (jangan balik bertanya soal fase). Tampilkan 3-4 menu sebagai daftar bernomor dengan harga, lalu tanya mau yang mana (cukup balas nomor).
+- Kalau customer tanya favorit / rekomendasi / "enaknya apa" -> JAWAB dulu lewat rekomendasi_menu. Tampilkan 3-4 menu sebagai daftar bernomor dengan harga, lalu tanya mau yang mana (cukup balas nomor).
 
 TAKE AWAY, PRE-ORDER, DAN NOMOR PESANAN:
-- Di awal tanya SATU hal saja: sudah di resto atau mau datang jam berapa (sebagai daftar bernomor). Jawaban -> atur_layanan. JANGAN tanya dine in atau take away di awal. Dine in/take away ditanya SEKALI di akhir (sebelum rincian): saat tampilkan_rincian_order menyuruhmu bertanya, tanyakan sebagai DAFTAR BERNOMOR "1. Makan di sini (dine in)", "2. Take away semua", "3. Sebagian take away". Jawaban -> atur_layanan (tipe dine_in / take_away / campur), lalu panggil tampilkan_rincian_order lagi (untuk "campur": tanya dulu menu mana yang take away sebagai daftar bernomor dari isi draft, panggil ubah_tipe_item per menu, lalu tampilkan_rincian_order). Kalau customer sendiri sudah bilang take away di tengah jalan (misal "iga take away"), catat di buat_order dan tidak perlu ditanya lagi. Take away TANPA biaya kemasan. Tidak ada delivery.
-- Customer boleh pesan SEBELUM datang (pre-order). Jam datang dikirim format 24 jam HH:MM. Pesanan tetap dibayar dulu lewat QR. Dapur memasak setelah customer mengonfirmasi 30 menit sebelum jam datang (bot yang menanyakan, kamu cuma menjawab lewat jadwal_kedatangan kalau customer membalas). Kalau customer sudah di resto, semuanya langsung diproses seperti biasa.
+- JANGAN menanyakan posisi/kedatangan dan JANGAN menanyakan dine in atau take away: default-nya sudah di resto dan dine in. Kalau customer sendiri minta take away, catat per menu di buat_order ("iga take away") atau atur_layanan tipe take_away kalau semuanya. Take away TANPA biaya kemasan. Tidak ada delivery.
+- Hanya kalau customer sendiri bilang akan datang nanti ("aku dateng jam 7", "pesen buat nanti"), itu pre-order: panggil atur_layanan dengan kedatangan jam HH:MM. Jam datang dikirim format 24 jam HH:MM. Pesanan tetap dibayar dulu lewat QR. Dapur memasak setelah customer mengonfirmasi 30 menit sebelum jam datang (bot yang menanyakan, kamu cuma menjawab lewat jadwal_kedatangan kalau customer membalas). Kalau customer sudah di resto, semuanya langsung diproses seperti biasa.
 - Menu tertentu take away/dine in beda dari yang lain -> tulis di buat_order apa adanya (misal "iga bakar 2 take away"), atau ubah_tipe_item untuk menu yang sudah ada di draft.
 - Setiap pesanan punya NOMOR PESANAN harian (misal #007). Selalu sebut nomor itu ke customer (field nomor_pesanan), JANGAN pernah menyebut pesanan_id.
 - Customer yang pesan sebelum datang: begitu sampai, minta nomor mejanya (konfirmasi_kedatangan), lalu arahkan: cari meja, lapor ke waiter sambil menyebut nomor pesanan.
 - Customer bilang tidak jadi datang untuk pesanan yang SUDAH dibayar -> jadwal_kedatangan aksi "batal". Uang yang sudah dibayar TIDAK dikembalikan: sampaikan santai dan sopan, tanpa menyalahkan. Pesanan yang BELUM dibayar dibatalkan lewat batalkan_order.
 - Pengembalian uang (misal menu habis setelah bayar) hanya tunai di kasir. Jangan menjanjikan transfer balik.
 
-ALUR PESAN 3 FASE (supaya customer tidak dibanjiri semua menu):
-- Urutan di awal: kedatangan dulu (atur_layanan), BARU tanya mau mulai dari makan berat atau nyemil (daftar bernomor). Jawaban customer -> pilih_jalur.
-- Jalur NYEMIL: camilan -> minuman -> makan berat. Jalur MAKAN BERAT: makan berat -> minuman -> camilan.
-- Fase pertama (setelah pilih_jalur): kartu menunya langsung dikirim otomatis, jangan baca ulang harga satu-satu.
-- Fase berikutnya: KUNCINYA UPSELLING. JANGAN langsung kirim menu. Tawarkan dulu dengan 1 kalimat yang menggoda, sebut 1 rekomendasi (dari rekomendasi_upsell) yang cocok dengan pesanannya. Kalau customer tertarik -> baru lihat_menu dengan kelompok fase itu. Kalau dia langsung setuju menu rekomendasinya -> buat_order.
-- SETIAP kali ada menu yang masuk, balas dalam SATU pesan: "Pesanan sementara:" + ringkasan SEMUA item di draft (format angka, tanpa harga), lalu di bawahnya 1 kalimat tanya pendek ("Mau lanjut apa nih?") dan DAFTAR BERNOMOR pilihan, satu per baris, sesuai instruksi_alur (tambah menu lagi / lanjut ke fase berikutnya / udah cukup). JANGAN kirim kartu menu dulu, baru dikirim (lihat_menu) kalau customer tertarik.
-- Customer menambah menu -> buat_order (ulangi format di atas). Customer menolak (nggak/udah/nggak usah) -> lewati_fase, sistem lanjut menawarkan fase sesudahnya.
-- JANGAN tanya "sudah?" atau "fix?". "Ada yang mau ditambah?" HANYA dipakai tepat setelah ada menu yang masuk.
-- Customer nolak tawaran ("nggak", "udah", "itu aja", "nggak usah minum") -> lewati_fase TANPA parameter. Itu tolakan biasa: sistem akan mengajukan SATU tawaran lagi lalu berhenti, jadi jangan dianggap customer minta berhenti. Hanya kalau customer eksplisit bilang "langsung bayar aja" / "jangan ditawarin lagi" -> lewati_fase dengan langsung_bayar=true.
-- Fase minuman: pilihan kopi / non-kopi ditawarkan sebagai bagian dari daftar bernomor (lihat instruksi_alur). Jawaban "kopi"/"non kopi"/"dua-duanya" (atau nomornya) itu pilihan KELOMPOK -> lihat_menu dengan kelompok "kopi" / "non_kopi" / "minuman", BUKAN buat_order.
-- FLEKSIBEL: customer boleh pesan apa saja kapan saja, loncat kelompok, minta lihat kelompok lain (lihat_menu dengan kelompok), atau langsung pesan tanpa pilih jalur. Jangan pernah menolak pesanan karena "belum fasenya".
-- Setelah semua fase lewat -> tampilkan_rincian_order (kalau dine in/take away belum ditanya, tool menyuruh bertanya dulu). Rincian berisi item, Subtotal, PPN 10%, Grand Total (+ tanya nomor meja dan nama sekaligus kalau belum ada / tanya boleh dilanjutkan ke pembayaran). Customer menjawab meja dan nama -> konfirmasi_kedatangan (isi nomor_meja dan nama). Customer setuju -> kirim_qr_pembayaran: kasir otomatis diminta membuat QR sebesar Grand Total, dan QR diteruskan ke customer begitu siap (beberapa menit). Jangan bilang "QR sudah dikirim" sebelum QR benar-benar tiba; katakan QR-nya "lagi disiapkan kasir".
+ALUR PESAN (BEBAS, TANPA URUTAN FASE):
+- Customer BOLEH melakukan apa saja kapan saja di dalam satu kunjungan: melihat menu bagian mana pun, bertanya acak (pedas? isinya apa? rekomendasi?), memesan, menambah, mengubah, lalu loncat lagi. TIDAK ADA urutan camilan, minuman, makan berat. JANGAN pernah menggiring customer memilih "mau mulai dari mana" dan JANGAN menawarkan "fase" berikutnya.
+- Customer chat pertama kali dianggap SUDAH duduk di resto dan makan di tempat (dine in). JANGAN menanyakan posisi/kedatangan dan JANGAN menanyakan dine in atau take away. Take away hanya kalau customer sendiri yang minta ("bungkus", "take away", "iga-nya dibungkus").
+- Minta menu -> lihat_menu. Menu yang diminta dikirim sebagai gambar halaman menu, dan SELALU dikirim lagi kalau diminta lagi (customer tidak perlu scroll). Setelah gambar terkirim, balas 1 kalimat pendek saja (misal "Nih menunya, mau pesan yang mana?"). JANGAN membaca ulang atau mendaftar nama kategori/menu satu per satu.
+- SETIAP kali ada menu yang masuk (buat_order), balas dalam SATU pesan: "Pesanan sementara:" + ringkasan SEMUA item di draft (format angka, tanpa harga), lalu 1 kalimat santai singkat ("Ada lagi?" / "Mau tambah apa lagi?"). TANPA daftar bernomor "Tambah menu lagi / Udah cukup". Ikuti juga catatan_untuk_ai dari hasil tool (tawaran nasi, saran menu).
+- TAWARAN NASI: kalau hasil buat_order memuat tawarkan_nasi, setelah ringkasan tanyakan SEKALI dengan ringan "Mau sekalian nasi putih (Rp10.000)?". Customer menjawab mau -> buat_order "nasi putih" dengan jumlah sama dengan porsi lauknya (atau sesuai yang dia sebut). Menjawab nggak -> lanjut, jangan menawarkan lagi. Nasi goreng dan mie TIDAK ditawari nasi.
+- SARAN MENU: kalau hasil buat_order memuat saran_menu, boleh menyebut SATU menu itu dengan ringan dan menggoda di kalimat penutup (misal "Edamame lagi enak nih buat temen ngobrol."). Jangan memaksa, jangan mengulang kalau customer sudah menolak atau mengabaikan, dan jangan mengarang menu di luar daftar.
+- Customer bilang sudah cukup (udah, itu aja, cukup, gitu aja, langsung bayar, minta tagihan, ga deh) -> LANGSUNG tampilkan_rincian_order. Jangan menawarkan apa-apa lagi, jangan bertanya "yakin?".
+- tampilkan_rincian_order menampilkan item, Subtotal, PPN, Grand Total, lalu (kalau belum ada) tanya nomor meja dan nama sekaligus. Customer menjawab meja dan nama -> konfirmasi_kedatangan (isi nomor_meja dan nama). Customer setuju -> kirim_qr_pembayaran: kasir otomatis diminta membuat QR sebesar Grand Total, dan QR diteruskan ke customer begitu siap (beberapa menit). Jangan bilang "QR sudah dikirim" sebelum QR benar-benar tiba; katakan QR-nya "lagi disiapkan kasir".
 - OPEN BILL: HANYA kalau customer sendiri minta bayar belakangan/open bill -> atur_cara_bayar cara "open_bill" (jangan menawarkan). Alur tetap sama sampai kirim_qr_pembayaran; bedanya pesanan langsung ke dapur tanpa QR. Customer boleh menambah pesanan berkali-kali. Saat customer minta bill/mau bayar -> minta_bill. Take away dan pre-order tidak bisa open bill (wajib bayar dulu), sampaikan santai.
-- Pesanan tambahan setelah lunas diproses biasa tanpa fase.
-- NASI: Nasi Putih Rp10.000, tidak ada menu yang sudah termasuk nasi. Kalau ada lauk/tongseng/sop/iga di pesanan dan belum ada nasi, tawarkan nasi putih SEKALI dengan ringan (sekalian di daftar pilihan upsell), jangan memaksa.
-- UPSELL: tawarkan menu yang ada di rekomendasi_upsell lebih dulu (itu menu prioritas), jangan mengarang menu.
+- Pesanan tambahan setelah lunas diproses biasa: rangkum lalu minta konfirmasi.
+- PPN: harga menu belum termasuk PPN 10%. JANGAN menyebut soal PPN/pajak kecuali customer menanyakannya (rincian sudah menampilkannya otomatis).
 
 INFO RESTO, BOOKING, WAITER, KUIS, RATING:
 - Customer tanya info resto / jam buka / last order / live music / kapasitas / ruang VIP / ruang meeting / booking -> panggil info_resto (sistem mengirim teks lengkapnya, jangan diulang), lalu 1 kalimat ajak lanjut (misal mau booking?). Pengecualian aturan 1 kalimat: teks dari tool boleh panjang karena dikirim sistem.
@@ -1161,8 +1161,9 @@ INFO RESTO, BOOKING, WAITER, KUIS, RATING:
 - Jam: resto hanya menerima pesanan saat buka dan sebelum last order (lihat baris JAM di STATE). Di luar itu sampaikan ramah dan jangan mencatat pesanan.
 
 CARA KERJA:
-- PILIHAN SPESIFIK MENANG: kalau customer menyebut kategori (misal "minuman tradisional", "gorengan", "sate") atau menu tertentu, itu yang dilayani (kartu kategori / catat pesanan). JANGAN balik bertanya kelompok/jalur/kopi-nonkopi lagi. Hanya kata umum seperti "kopi" (3 kategori) atau "minuman" yang menampilkan beberapa kartu.
-- Tanya menu / minta lihat menu / minta foto-pdf menu -> panggil lihat_menu (utamakan kelompok fase saat ini, semua kartu hanya kalau customer eksplisit minta semua menu).
+- PILIHAN SPESIFIK MENANG: kalau customer menyebut kategori (misal "minuman tradisional", "gorengan", "sate") atau menu tertentu, itu yang dilayani (kartu kategori / catat pesanan). JANGAN balik bertanya kelompok/kopi-nonkopi lagi. Hanya kata umum seperti "kopi" (3 kategori) atau "minuman" yang menampilkan beberapa halaman.
+- Customer menyebut JENIS minuman/makanan tertentu (tradisional, jamu, teh, jus, squash, espresso, flavored coffee, gorengan, sate, dll) -> lihat_menu dengan parameter kategori yang sesuai SAJA, JANGAN ikut memanggil dengan kelompok (kelompok hanya untuk kata umum: camilan, makan berat, kopi, non kopi, minuman). Satu panggilan cukup.
+- Tanya menu / minta lihat menu / minta foto-pdf menu -> panggil lihat_menu: "menu" saja = semua halaman (kosongkan parameter); menyebut bagian (camilan, minuman, kopi, makan berat, gorengan, dll) = parameter kelompok/kategori yang sesuai. Selalu kirim lagi kalau diminta lagi.
 - Tanya hal spesifik soal 1/beberapa menu (bahan, pedas, alergi, cocok buat siapa, dll) -> panggil tanya_detail_menu, lalu jawab dari deskripsi yang didapat dengan gaya ngobrol, bukan baca manual.
 - Customer tanya menu berdasarkan SIFAT ("yang nggak pedas?", "ada yang manis?", "yang pakai santan?", "dibakar atau digoreng?", "yang bukan daging sapi?", "yang berkuah?") -> panggil cari_menu_atribut dengan filter yang disebut saja (isi kelompok kalau konteksnya jelas). Tanya satu menu tertentu soal pedas/bahan/cara masak -> tanya_detail_menu (lihat field atribut). Data atribut itu PERKIRAAN: bilang "umumnya / biasanya", jangan menjamin, apalagi soal alergi (arahkan tanya kasir). Pedas hanya ada/tidak, jangan mengarang tingkat kepedasan. WAJIB memanggil cari_menu_atribut SETIAP kali ada pertanyaan sifat (walau pertanyaan mirip sudah dijawab sebelumnya), jangan menjawab dari ingatan percakapan.
 - Sebut menu + jumlah mau dipesan -> panggil buat_order (ini MENAMBAH ke draft).
@@ -1199,7 +1200,7 @@ CARA KERJA:
 - QR pembayaran sekarang DINAMIS: saat customer setuju rincian, SEMUA kasir menerima pesan "💳 MINTA QR" berisi nomor pesanan, nama, meja (atau jam datang untuk pre-order), isi pesanan, Subtotal, PPN 10%, dan Grand Total. Kasir membuat QRIS di POS, memfoto, lalu mengirim fotonya ke chat ini (idealnya reply pesan MINTA QR, atau tulis "pesanan 7" di caption). Foto itu diteruskan sistem ke customer otomatis (bukan lewat tool). Kalau kasir mengirim foto QR tanpa petunjuk dan ada beberapa permintaan menunggu, sistem yang bertanya balik pesanan mana.
 - Pembayaran dicocokkan lewat nomor pesanan/nama itu. Harga menu BELUM termasuk PPN 10%; total yang dibayar customer = Grand Total.
 - OPEN BILL: pesanan langsung masuk dapur (tiket bertanda OPEN BILL, belum bayar). Saat customer minta bill, kasir menerima "💳 MINTA QR | BILL" berisi semua pesanan dan total; setelah kasir mengirim foto QR dan customer membayar, kasir bilang "meja 5 udah bayar" -> konfirmasi_bayar (semua pesanan open bill customer itu lunas sekaligus).
-- Booking: kasir menerima "📅 BOOKING #n". Kasir membalas "booking 3 diterima/ditolak" -> konfirmasi_booking. Booking ruang VIP yang diterima meminta deposit Rp2.000.000 lewat alur QR yang sama; kalau kasir bilang "deposit booking 3 sudah masuk" -> konfirmasi_deposit_booking.
+- Booking: kasir menerima "📅 BOOKING #n". Kasir membalas "booking 3 diterima/ditolak" -> konfirmasi_booking. Booking ruang VIP yang diterima meminta DP Rp400.000 (minimum spend ruangan Rp2.000.000) lewat alur QR yang sama; kalau kasir bilang "deposit booking 3 sudah masuk" -> konfirmasi_deposit_booking.
 - Waiter dipanggil lewat pesan "🔔 PANGGIL WAITER | Meja n", info saja, tidak perlu tool. Setelah 3 jam sejak pesanan pertama, kasir menerima "⏰ Meja n sudah 3 jam, sudah kosong?": kalau sudah kosong, kasir bilang "meja n kosong" -> selesaikan_meja (customer otomatis ditanya rating).
 - Kasir merujuk pesanan lewat NOMOR PESANAN harian ("pesanan 7" = #007), isi parameter nomor_pesanan. Jangan pakai pesanan_id (itu ID internal).
 - Pesanan pre-order (customer belum sampai) punya jam datang; tiketnya ke staf bertanda BELUM DIMASAK sampai customer konfirmasi, lalu kasir/dapur dapat pesan "MULAI MASAK". Menu take away ditandai [TAKE AWAY] di tiket.
@@ -1237,7 +1238,16 @@ function pesanMenyebutMenu(pesan) {
   return false;
 }
 
+const TOOL_PENCATAT_ORDER = ['buat_order', 'ubah_jumlah_item', 'hapus_item_order', 'ubah_tipe_item', 'jawab_klarifikasi_menu', 'jawab_pilihan_menu', 'tanya_detail_menu', 'lihat_menu', 'cari_menu_atribut', 'rekomendasi_menu', 'cek_status_order_saya', 'forward_pesan_ke_kasir', 'putuskan_item_habis', 'tampilkan_rincian_order', 'batalkan_order', 'atur_layanan'];
+
 const KLAIM_BERISIKO = [
+  // Customer menyebut/berubah pikiran soal menu ("eh yang tadi aja deh mie"), AI membalas "siap, Mie Godog x1" tanpa tool: tidak tercatat.
+  {
+    klaim: 'menu yang disebut customer sudah ditanggapi/dicatat',
+    re: { test: (t) => pesanMenyebutMenu(t) && /\b(siap|oke|sip|baik|noted|jadi|beres|ya)\b/i.test(t) },
+    tool: TOOL_PENCATAT_ORDER,
+    hanyaJika: (pesanUser) => pesanMenyebutMenu(pesanUser) && !/\?/.test(pesanUser),
+  },
   {
     klaim: 'QR pembayaran sudah dikirim',
     re: /\bqr\b[^.\n]{0,80}\b(sudah|udah|telah)\b[^.\n]{0,25}\b(terkirim|(di)?kirim(in|kan)?)\b|\b(sudah|udah|telah)\b[^.\n]{0,20}\b(kirim|kirimin|kirimkan)\b[^.\n]{0,20}\bqr\b/i,
@@ -1552,7 +1562,7 @@ async function eksekusiLihatMenu(args, konteks) {
         ? `Menu di kelompok ini yang hari ini HABIS (kartu gambar masih menampilkannya): ${habis.join(', ')}. Sebutkan singkat.`
         : undefined,
       catatan_untuk_ai: kirim.terkirim
-        ? 'Kartu menu kelompok ini sudah dikirim terpisah. Balas 1 kalimat singkat ajak pilih, jangan baca ulang harga.'
+        ? 'Gambar menu bagian ini sudah dikirim. Balas 1 kalimat singkat saja (misal "Nih, mau pesan yang mana?"), jangan baca ulang harga atau nama menu.'
         : 'Gambar kartu tidak tersedia, sebutkan daftar menu & harga dengan format angka.',
     };
   }
@@ -1614,8 +1624,8 @@ async function eksekusiLihatMenu(args, konteks) {
       ? `Menu yang hari ini HABIS (tidak bisa dipesan, tapi kartu gambar masih menampilkannya): ${semuaHabis.join(', ')}. Sebutkan ini singkat ke customer.`
       : undefined,
     catatan_untuk_ai: hasilKirim
-      ? 'Kartu semua kategori sudah/sedang dikirim terpisah oleh sistem. Sebutkan kategori apa aja secara singkat (format angka), tanya mau lihat/pesan dari kategori mana. JANGAN sebutkan nama+harga satu-satu di sini karena sudah ada di gambar kartu.'
-      : 'Gambar kartu tidak tersedia. Sebutkan kategori apa aja (format angka), tanya mau lihat kategori mana.',
+      ? 'Buku menu lengkap (semua halaman) sudah dikirim sebagai gambar. Balas 1 kalimat pendek saja (misal "Nih menunya, mau pesan yang mana?"). JANGAN mendaftar kategori atau menu, karena sudah ada di gambar.'
+      : 'Gambar menu tidak tersedia. Sebutkan singkat bagian menu yang ada (gorengan, sate, kopi, dll) dan tanya mau lihat yang mana.',
   };
 }
 
@@ -1822,6 +1832,9 @@ function masukkanItemKeDraft(konteks, items) {
 async function eksekusiBuatOrder({ teks_mentah }, konteks) {
   const pagar = pagarJam();
   if (pagar) return pagar;
+  // Pertanyaan klarifikasi/pilihan yang menggantung dianggap batal begitu customer memesan hal lain (plin-plan)
+  clearKlarifikasiPending(konteks.jid);
+  clearPilihanPending(konteks.jid);
   // Customer baru dikasih daftar rekomendasi dan membalas angkanya ("1"): terjemahkan ke nama menu di kode,
   // jangan bergantung pada AI (yang kadang meneruskan angka mentah ke parser).
   const rekomendasi = db.getPendingState(konteks.jid, 'rekomendasi');
@@ -1908,32 +1921,9 @@ async function eksekusiBuatOrder({ teks_mentah }, konteks) {
 
   const semuaItemSaatIni = db.getItemsByPesananId(pesananId).filter((i) => i.status_item === 'AKTIF');
 
-  // ---------- Alur 3 fase: tandai fase item ini selesai, lalu tawarkan fase berikutnya ----------
-  catatFaseDariItem(konteks.jid, hasilParse.items);
-  const alurAktif = !db.getAlur(konteks.jid).tutup;
-
-  if (alurAktif) {
-    // Setelah item masuk: SATU pesan berisi ringkasan + "ada yang mau ditambah?" + upsell fase berikutnya.
-    // Kartu menu fase berikutnya TIDAK dikirim, baru dikirim kalau customer tertarik.
-    const faseNext = faseBerikutnya(db.getAlur(konteks.jid));
-    const infoFase = faseNext ? await tawarkanFaseBerikutnya(konteks) : {};
-    return {
-      sukses: true,
-      pesanan_id: pesananId,
-      nomor_pesanan: nomorPesanan(db.getPesananById(pesananId)),
-      items_baru: hasilParse.items.map((i) => `${i.menu.nama} x${i.qty}${i.catatan ? ` (${i.catatan})` : ''}`),
-      items_total_di_draft: semuaItemSaatIni.map((i) => labelItem(i)),
-      menu_tidak_ditemukan: hasilParse.tidakDikenali.length > 0 ? hasilParse.tidakDikenali : null,
-      qr_sebelumnya_invalid: qrLamaJadiInvalid || undefined,
-      ...infoFase,
-      catatan_untuk_ai: (qrLamaJadiInvalid ? 'PENTING: QR lama TIDAK BERLAKU LAGI karena ada tambahan item, ingatkan singkat jangan bayar pakai QR lama. ' : '')
-        + 'Item sudah masuk draft. Format balasan: baris pertama "Pesanan sementara:" lalu RINGKASAN SEMUA item di draft (items_total_di_draft) dengan format angka (1. 2. 3.), tanpa harga. '
-        + (hasilParse.tidakDikenali.length > 0 ? 'Sebutkan juga singkat menu yang tidak ditemukan. ' : '')
-        + (faseNext
-          ? 'Lalu di BAWAH ringkasan, ikuti format DAFTAR BERNOMOR dari instruksi_alur (1 kalimat tanya pendek, lalu pilihan satu per baris), JANGAN dalam paragraf, supaya customer cukup membalas nomor atau satu kata. Kalau customer menyebut menu -> buat_order. Kalau menjawab kelompok/tertarik -> lihat_menu. Kalau menolak (nggak/udah cukup) -> lewati_fase.'
-          : 'Semua fase sudah ditawarkan. Lalu di BAWAH ringkasan, 1 kalimat tanya pendek ("Mau lanjut apa nih?") dan DAFTAR BERNOMOR: "1. Tambah menu lagi" dan "2. Udah cukup". Kalau customer menjawab udah cukup/tidak -> panggil lewati_fase (lanjut ke rincian). Kalau menyebut menu lagi -> buat_order.'),
-    };
-  }
+  // Tanpa alur fase: customer bebas menambah apa saja. Setelah item masuk, sistem hanya menambahkan
+  // tawaran nasi (sekali) dan paling banyak satu saran menu margin, lalu AI menutup dengan 1 kalimat santai.
+  const tambahan = infoTambahanSetelahOrder(konteks.jid, pesananId);
 
   return {
     sukses: true,
@@ -1943,10 +1933,49 @@ async function eksekusiBuatOrder({ teks_mentah }, konteks) {
     items_total_di_draft: semuaItemSaatIni.map((i) => labelItem(i)),
     menu_tidak_ditemukan: hasilParse.tidakDikenali.length > 0 ? hasilParse.tidakDikenali : null,
     qr_sebelumnya_invalid: qrLamaJadiInvalid || undefined,
-    catatan_untuk_ai: qrLamaJadiInvalid
-      ? 'PENTING: QR lama TIDAK BERLAKU LAGI karena ada tambahan item (nominal berubah). Rangkum SEMUA item di draft saat ini dengan format angka, lalu di 1 kalimat terakhir: ingatkan jangan bayar pakai QR lama dan minta konfirmasi ulang ("ya"/"fix"). Tanpa kalimat pembuka.'
-      : 'Pesanan tercatat sebagai draft. Rangkum SEMUA item di draft saat ini (format angka, bukan cuma yang baru ditambahkan), lalu 1 kalimat terakhir: tanya sudah fix atau mau nambah lagi. Tanpa kalimat pembuka. JANGAN sebutkan total harga dulu di sini (dihitung final pas konfirmasi).',
+    tawarkan_nasi: tambahan.tawarkan_nasi || undefined,
+    saran_menu: tambahan.saran_menu || undefined,
+    catatan_untuk_ai: (qrLamaJadiInvalid ? 'PENTING: QR lama TIDAK BERLAKU LAGI karena ada tambahan item (nominal berubah), ingatkan singkat jangan bayar pakai QR lama. ' : '')
+      + 'Item sudah masuk draft. Balas SATU pesan: baris pertama "Pesanan sementara:" lalu RINGKASAN SEMUA item di draft (items_total_di_draft) dengan format angka (1. 2. 3.), tanpa harga. '
+      + (hasilParse.tidakDikenali.length > 0 ? 'Sebutkan juga singkat menu yang tidak ditemukan. ' : '')
+      + (tambahan.tawarkan_nasi
+        ? 'Di bawah ringkasan, tanyakan SATU hal ringan: "Mau sekalian nasi putih (Rp10.000)?" (tanpa daftar bernomor). Kalau customer mau -> buat_order "nasi putih" dengan jumlah sama dengan porsi lauknya (atau sesuai yang dia sebut). Jangan menawarkan hal lain di pesan ini. '
+        : tambahan.saran_menu
+          ? `Di bawah ringkasan, tutup dengan 1 kalimat santai singkat, boleh sekalian menyebut SATU saran ringan: ${tambahan.saran_menu} (misal "Ada lagi? ${tambahan.saran_menu.split(' (')[0]} lagi enak nih."). Tanpa daftar bernomor. `
+          : 'Di bawah ringkasan, tutup dengan 1 kalimat santai singkat ("Ada lagi?"). Tanpa daftar bernomor dan jangan menawarkan fase/kategori. ')
+      + 'Kalau customer bilang sudah cukup/udah/itu aja -> tampilkan_rincian_order. JANGAN sebutkan total harga di sini.',
   };
+}
+
+// Setelah item masuk: (1) tawarkan nasi putih SEKALI kalau ada makanan berat selain nasi goreng/mie dan belum ada nasi,
+// (2) kalau tidak, satu saran menu margin yang belum dipesan (maksimal 3 kali per sesi, tidak mengulang yang sama).
+function infoTambahanSetelahOrder(jid, pesananId) {
+  const items = db.getItemsByPesananId(pesananId).filter((i) => i.status_item === 'AKTIF');
+  const idNasi = config.info().nasi?.id_menu;
+  const menuDari = (i) => (i.menu_id ? db.getMenuById(i.menu_id) : null);
+
+  const adaNasi = items.some((i) => i.menu_id === idNasi);
+  const perluNasi = items.some((i) => {
+    const m = menuDari(i);
+    return m && m.id !== idNasi && m.kategori_id !== 'nasi_mie' && faseDariKategoriId(m.kategori_id) === 'berat';
+  });
+  if (adaNasi) db.clearPendingState(jid, 'nasi_ditawar');
+  if (perluNasi && !adaNasi && !db.getPendingState(jid, 'nasi_ditawar')) {
+    db.setPendingState(jid, 'nasi_ditawar', true);
+    return { tawarkan_nasi: true };
+  }
+
+  const sudahSaran = db.getPendingState(jid, 'saran_menu') || [];
+  if (sudahSaran.length >= 3) return {};
+  const dipesan = new Set(items.map((i) => i.menu_id));
+  const kelompokDipesan = new Set(items.map((i) => faseDariKategoriId(menuDari(i)?.kategori_id)).filter(Boolean));
+  const kandidat = db.getMenuTersedia().filter((m) => adaMargin(m) && !dipesan.has(m.id) && !sudahSaran.includes(m.nama));
+  // Utamakan kelompok yang belum ada di pesanan (belum ada minuman -> saran minuman, dst.)
+  const pilih = urutkanPrioritas(kandidat.filter((m) => !kelompokDipesan.has(faseDariKategoriId(m.kategori_id))))[0]
+    || urutkanPrioritas(kandidat)[0];
+  if (!pilih) return {};
+  db.setPendingState(jid, 'saran_menu', [...sudahSaran, pilih.nama]);
+  return { saran_menu: `${pilih.nama} (${rp(pilih.varian[0]?.harga)})` };
 }
 
 async function eksekusiJawabKlarifikasiMenu({ teks_jawaban }, konteks) {
@@ -2083,8 +2112,8 @@ function dataKurangUntukQr(customer, pesanan) {
       + '. Jawabannya -> atur_layanan (kedatangan "sekarang" atau jam HH:MM). Nomor meja ditanya SETELAH customer menjawab sudah di resto (belum perlu kalau datang nanti). Setelah nama dijawab, tanya enaknya dipanggil apa dengan DAFTAR BERNOMOR "1. Mas" dan "2. Mbak".';
   } else if (kurang.includes('nama')) {
     petunjuk = kurang.includes('nomor meja')
-      ? 'tanya nomor meja dan nama sekaligus (1 kalimat). Setelah nama dijawab, tanya enaknya dipanggil apa dengan DAFTAR BERNOMOR "1. Mas" dan "2. Mbak" (customer cukup balas satu kata).'
-      : 'tanya namanya (1 kalimat), dipakai kasir untuk mencocokkan pembayaran. Setelah nama dijawab, tanya enaknya dipanggil apa dengan DAFTAR BERNOMOR "1. Mas" dan "2. Mbak" (customer cukup balas satu kata).';
+      ? 'tanya nomor meja, nama, dan sapaan SEKALIGUS dalam 1 kalimat (misal "Boleh tau nomor meja, nama, dan enaknya dipanggil Mas atau Mbak?"), tanpa daftar bernomor. Jawaban seperti "meja 5, Regina, mbak" -> konfirmasi_kedatangan (nomor_meja, nama) lalu simpan_nama (sapaan). Kalau sapaan belum dijawab, baru tanya "Mas atau Mbak?".'
+      : 'tanya nama dan sapaan SEKALIGUS dalam 1 kalimat (misal "Boleh tau namanya, dan enaknya dipanggil Mas atau Mbak?"), tanpa daftar bernomor; nama dipakai kasir untuk mencocokkan pembayaran. Jawaban seperti "Regina, mbak" -> simpan_nama (nama dan sapaan sekaligus). Kalau cuma nama yang dijawab, baru tanya "Mas atau Mbak?". Setelah data lengkap, cukup SATU kali konfirmasi "rinciannya sudah pas? kalau oke aku minta kasir siapkan QR-nya", jangan diulang.';
   } else if (kurang.includes('sapaan')) {
     petunjuk = kurang.includes('nomor meja')
       ? 'tanya nomor mejanya, lalu tanya enaknya dipanggil apa dengan DAFTAR BERNOMOR "1. Mas" dan "2. Mbak" (customer cukup balas satu kata).'
@@ -2119,37 +2148,7 @@ async function eksekusiTampilkanRincianOrder(_, konteks) {
     };
   }
 
-  // Dine in atau take away ditanya SEKALI di akhir, sebelum rincian. Kalau ada menu yang sudah ditandai take away
-  // oleh customer sendiri, itu dianggap sudah dijawab.
   const cust = db.getCustomer(konteks.jid);
-  if (!cust.layanan_ditanya) {
-    if (items.some((i) => i.tipe === 'TAKE_AWAY')) {
-      db.setLayananDitanya(konteks.jid, 1);
-    } else {
-      db.setPendingState(konteks.jid, 'tanya_layanan', true);
-      return {
-        sukses: false,
-        perlu_tanya_layanan: true,
-        pesan: 'Dine in atau take away belum ditanyakan.',
-        catatan_untuk_ai: 'Tanyakan SEKARANG (belum rincian): 1 kalimat pendek lalu DAFTAR BERNOMOR "1. Makan di sini (dine in)", "2. Take away semua", "3. Sebagian take away". Jawaban customer -> atur_layanan (tipe dine_in / take_away / campur); sistem lalu menampilkan rincian. JANGAN tampilkan rincian dulu.',
-      };
-    }
-  }
-
-  // Nasi: ada lauk berat tapi belum ada nasi -> tawarkan SEKALI sebelum rincian (subtotal sengaja belum diset,
-  // supaya jawaban "ya" dari customer tidak dianggap persetujuan rincian)
-  const adaNasi = items.some((i) => i.menu_id === config.info().nasi?.id_menu);
-  const adaLauk = items.some((i) => faseDariKategoriId(db.getMenuById(i.menu_id)?.kategori_id) === 'berat' && !/nasi|mie/i.test(i.nama_snapshot));
-  if (!adaNasi && adaLauk && !db.getPendingState(konteks.jid, 'nasi_ditawar')) {
-    db.setPendingState(konteks.jid, 'nasi_ditawar', true);
-    return {
-      sukses: false,
-      tawarkan_nasi: true,
-      pesan: 'Ada lauk berat tanpa nasi: tawarkan nasi putih dulu (sekali).',
-      catatan_untuk_ai: 'JANGAN tampilkan rincian dulu. Tawarkan ringan SEKALI: 1 kalimat ("Nasi putih Rp10.000, mau sekalian?") lalu DAFTAR BERNOMOR "1. Tambah nasi putih" dan "2. Nggak usah". Kalau mau -> buat_order "nasi putih" (jumlah sesuai, tanya kalau lebih dari satu orang), lalu tampilkan_rincian_order. Kalau nggak -> tampilkan_rincian_order lagi.',
-    };
-  }
-
   const subtotal = items.reduce((sum, i) => sum + i.harga_satuan_snapshot * i.qty, 0);
   db.setHargaFixPesanan(draft.id, subtotal);
   const tagihan = config.hitungTagihan(subtotal);
@@ -3085,9 +3084,7 @@ function rapikanBalasanCustomer(jid, teks, { pertama = false, rincianDitampilkan
     hasil = hasil.replace(new RegExp(`\\b(?:mas|mbak|mba)\\s+${nama}\\b`, 'gi'), c.nama);
   }
 
-  if (pertama && !sudahDilayani && !c.rencana_datang && !db.getDraftAtauMenungguBayarByCustomer(jid) && !/^\s*2\.\s/m.test(hasil)) {
-    hasil = `${hasil.trimEnd()}\n1. Sudah di resto\n2. Datang nanti (sebutkan jamnya, misal 19.30)`;
-  }
+  void pertama; void sudahDilayani; // tidak ada lagi pertanyaan kedatangan di awal
   return hasil;
 }
 
@@ -3235,13 +3232,13 @@ async function eksekusiAturLayanan({ tipe, kedatangan }, konteks) {
   const lengkap = !!c.rencana_datang;
   const draftSekarang = db.getDraftAtauMenungguBayarByCustomer(konteks.jid);
   const sudahMulai = !!draftSekarang || !!db.getAlur(konteks.jid).jalur; // customer sudah memilih/memesan sebelum ditanya kedatangan
-  let lanjut = 'LANJUT tanya mau mulai dari mana sebagai DAFTAR BERNOMOR: "1. Makan berat" dan "2. Nyemil". JANGAN tanya dine in/take away sekarang (ditanya di akhir). ';
+  let lanjut = 'Lanjutkan sesuai yang diminta customer (lihat menu / pesan), JANGAN menanyakan mau mulai dari mana atau dine in/take away. ';
   if (lengkap && sudahMulai) {
     if (draftSekarang?.subtotal) {
       const { kurang, petunjuk } = dataKurangUntukQr(c, draftSekarang);
       lanjut = kurang.length > 0 ? 'LANJUT: ' + petunjuk + ' ' : 'LANJUT: tanya apakah rincian sudah benar dan boleh dilanjutkan ke pembayaran. ';
     } else {
-      lanjut = 'Customer sudah memulai pesanan, JANGAN tanya mau mulai dari mana lagi; lanjutkan alur sebelumnya. ';
+      lanjut = 'Customer sudah memulai pesanan, lanjutkan alur sebelumnya tanpa menanyakan hal baru. ';
     }
   }
   return {
@@ -3499,7 +3496,7 @@ async function eksekusiAjukanBooking(args, konteks) {
     `Tanggal: ${args.tanggal} jam ${jam} | ${args.jumlah_orang} orang`,
     rokok ? `Area: ${rokok === 'SMOKING' ? 'smoking' : 'non smoking'}` : null,
     args.catatan ? `Catatan: ${args.catatan}` : null,
-    jenis === 'RUANG_VIP' ? `Ketentuan: min spend ${rp(v.minimum_spend)}, deposit ${rp(v.deposit)} di awal.` : 'Syarat full booking dibahas langsung dengan customer.',
+    jenis === 'RUANG_VIP' ? `Ketentuan: min spend ${rp(v.minimum_spend)}, DP ${rp(v.deposit)} di awal.` : 'Syarat full booking dibahas langsung dengan customer.',
     '',
     `Balas: "booking ${id} diterima" atau "booking ${id} ditolak <alasan>"`,
   ].filter(Boolean).join('\n'));
@@ -3771,7 +3768,7 @@ async function eksekusiKonfirmasiBooking({ nomor_booking, aksi, alasan }, kontek
       `Buat QRIS ${rp(deposit)} di POS, foto QR-nya, lalu kirim ke chat ini sebagai REPLY pesan ini (atau tulis "booking ${b.id}" di caption).`,
       `Kalau sudah masuk, bilang: "deposit booking ${b.id} sudah masuk"`,
     ].join('\n'));
-    const pesan = `Kabar baik ${sapa}, booking ${ringkas} diterima 🎉 Untuk mengunci, deposit ${rp(deposit)} dibayar di awal (dihitung sebagai bagian dari minimum spend). QR-nya lagi disiapkan kasir, sebentar ya.${alasan ? `\nCatatan tim: ${alasan}` : ''}`;
+    const pesan = `Kabar baik ${sapa}, booking ${ringkas} diterima 🎉 Untuk mengunci, DP ${rp(deposit)} dibayar di awal (dihitung sebagai bagian dari minimum spend). QR-nya lagi disiapkan kasir, sebentar ya.${alasan ? `\nCatatan tim: ${alasan}` : ''}`;
     await konteks.kirimPesan(b.customer_jid, pesan);
     db.simpanChatHistory(b.customer_jid, 'assistant', pesan);
     return { sukses: true, nomor_booking: b.id, status: 'diterima, menunggu deposit', customer_dikabari: true };
@@ -3793,7 +3790,7 @@ async function eksekusiKonfirmasiDepositBooking({ nomor_booking }, konteks) {
   const perm = db.getPermintaanQrByRef('DEPOSIT', b.id);
   if (perm) db.setPermintaanQrLunas(perm.id);
   const sapa = sebutCustomer(db.getCustomer(b.customer_jid), b.customer_jid);
-  const pesan = `Makasih ${sapa}, deposit ${rp(deposit)} udah masuk. Booking ${NAMA_JENIS_BOOKING[b.jenis]} tanggal ${b.tanggal} jam ${b.jam} resmi terkunci ✅ Sampai ketemu!`;
+  const pesan = `Makasih ${sapa}, DP ${rp(deposit)} udah masuk. Booking ${NAMA_JENIS_BOOKING[b.jenis]} tanggal ${b.tanggal} jam ${b.jam} resmi terkunci ✅ Sampai ketemu!`;
   await konteks.kirimPesan(b.customer_jid, pesan);
   db.simpanChatHistory(b.customer_jid, 'assistant', pesan);
   return { sukses: true, nomor_booking: b.id, deposit, customer_dikabari: true };
@@ -4363,7 +4360,7 @@ module.exports = {
   TOOLS_CUSTOMER, TOOLS_OPERATOR,
   SYSTEM_PROMPT_CUSTOMER, SYSTEM_PROMPT_OPERATOR,
   jalankanAgent,
-  tangkapRatingDanKuis, kirimKeSemuaKasir, kirimTiketPermintaanQr, kelompokDariPesan, mintaMenuLengkap, kelompokDariFrasa, mintaRating, sebutCustomer,
+  infoTambahanSetelahOrder, tangkapRatingDanKuis, kirimKeSemuaKasir, kirimTiketPermintaanQr, kelompokDariPesan, mintaMenuLengkap, kelompokDariFrasa, mintaRating, sebutCustomer,
   tangkapJawabanSapaan, tangkapJawabanKedatangan, pesanMenyetujuiQr, pesanMengonfirmasiKedatangan, rapikanBalasanCustomer, klaimTanpaBukti, kategoriDariPesan, praRouterCustomer,
   EKSEKUTOR_CUSTOMER, EKSEKUTOR_OPERATOR,
   setKlarifikasiPending, getKlarifikasiPending, clearKlarifikasiPending,
