@@ -4,6 +4,7 @@ const {
   default: makeWASocket,
   useMultiFileAuthState,
   DisconnectReason,
+  downloadMediaMessage,
 } = require('@whiskeysockets/baileys');
 const qrcode = require('qrcode-terminal');
 const path = require('path');
@@ -11,10 +12,13 @@ const fs = require('fs');
 
 const db = require('./db');
 const { rp, nomorPesanan } = require('./format');
-const ai = require('./ai');
+const config = require('./config');
+const nota = require('./nota');
 const agent = require('./agent');
 
 let sock;
+
+const LOGGER_DIAM = { info() {}, error() {}, warn() {}, debug() {}, trace() {}, fatal() {}, child() { return this; } };
 
 const TIMEOUT_KEPUTUSAN_HABIS_MS = 10 * 60 * 1000; // 10 menit
 
@@ -30,7 +34,7 @@ async function cekTimeoutKeputusanHabis() {
     // Timeout: auto-batal + refund
     db.setStatusItemPesanan(item.id, 'DIBATALKAN_HABIS');
     db.hitungUlangSubtotalAktif(item.pesanan_id);
-    const nominal = item.harga_satuan_snapshot * item.qty;
+    const nominal = config.denganPpn(item.harga_satuan_snapshot * item.qty); // refund termasuk PPN
     db.catatRefund({
       pesanan_id: item.pesanan_id,
       pesanan_item_id: item.id,
@@ -44,13 +48,10 @@ async function cekTimeoutKeputusanHabis() {
       `Karena belum ada balasan, ${item.nama_snapshot} dibatalin otomatis ya Mas/Mbak, uangnya (${rp(nominal)}) dikembalikan tunai di kasir. Maaf banget ya 🙏`
     );
 
-    const operatorUtama = db.getAllOperators().find((o) => o.is_utama === 1);
-    if (operatorUtama) {
-      await kirimPesan(
-        operatorUtama.jid,
-        `⏱️ AUTO-BATAL (timeout 10 menit) -- Pesanan #${item.pesanan_id} (meja ${item.nomor_meja || '-'}, ${customer.nama || 'customer'})\nItem: ${item.nama_snapshot}\nRefund: ${rp(nominal)}\n\nMohon proses pengembalian uangnya nggih.`
-      );
-    }
+    await agent.kirimKeSemuaKasir(
+      { kirimPesan },
+      `⏱️ AUTO-BATAL (timeout 10 menit) -- Pesanan #${item.pesanan_id} (meja ${item.nomor_meja || '-'}, ${customer.nama || 'customer'})\nItem: ${item.nama_snapshot}\nRefund: ${rp(nominal)} (termasuk PPN)\n\nMohon proses pengembalian uangnya nggih.`
+    );
 
     console.log(`⏱️  Auto-batal item #${item.id} (${item.nama_snapshot}) karena timeout.`);
   }
@@ -132,7 +133,8 @@ async function startBot() {
         const media = deteksiJenisMedia(isi);
         if (media) {
           console.log(`\n📎 ${media} masuk dari ${sender}`);
-          await handlePesanNonTeks(sender, media);
+          if (db.isOperator(sender) && isi.imageMessage) await handleOperatorMedia(sender, message, isi);
+          else await handlePesanNonTeks(sender, media);
         }
         // reaksi, protokol, dll: diabaikan diam-diam
         return;
@@ -196,8 +198,46 @@ async function kirimKartuMenu(jid, menu) {
   return 'tidak_ada';
 }
 
-// Kirim kartu 1 kategori (dipakai saat lihat_menu dengan kategori spesifik).
+// ---------- MENU PER HALAMAN PDF ----------
+// Kartu per-MENU (data_menu/kartu) tetap dipakai untuk menu spesifik. Kumpulan menu (kategori / kelompok / semua)
+// dikirim sebagai halaman buku menu (data_menu/halaman_menu/pNN.jpg, dibuat oleh ekspor_menu.py),
+// dipetakan lewat data_menu/halaman_menu.json. Halaman yang sudah dikirim tidak dikirim ulang dalam satu kunjungan.
+const FILE_HALAMAN = path.join(DATA_MENU_DIR, 'halaman_menu.json');
+const DIR_HALAMAN = path.join(DATA_MENU_DIR, 'halaman_menu');
+
+function petaHalaman() {
+  try { return JSON.parse(fs.readFileSync(FILE_HALAMAN, 'utf8')); } catch { return null; }
+}
+
+const fileHalaman = (n) => path.join(DIR_HALAMAN, `p${String(n).padStart(2, '0')}.jpg`);
+
+// Kirim daftar halaman (nomor), melewati yang sudah terkirim. Mengembalikan { terkirim, dilewati } (jumlah)
+async function kirimHalamanMenu(jid, daftarHalaman, { paksa = false } = {}) {
+  const peta = petaHalaman();
+  const sudah = new Set(db.getPendingState(jid, 'halaman_terkirim') || []);
+  let terkirim = 0; let dilewati = 0; let adaFile = false;
+  const keluar = [];
+  for (const n of daftarHalaman) {
+    if (!fs.existsSync(fileHalaman(n))) continue;
+    adaFile = true;
+    if (!paksa && sudah.has(n)) { dilewati++; continue; }
+    const caption = (peta?.caption_halaman?.[String(n)]) || (terkirim === 0 ? peta?.caption_umum : undefined) || undefined;
+    const ok = await kirimGambarJikaAda(jid, fileHalaman(n), caption);
+    if (ok) { terkirim++; keluar.push(n); await tunggu(400); }
+  }
+  if (keluar.length > 0) db.setPendingState(jid, 'halaman_terkirim', [...sudah, ...keluar]);
+  return { terkirim, dilewati, adaFile };
+}
+
+// Kirim halaman untuk 1 kategori. Return 'kartu' (terkirim atau sudah pernah), atau 'tidak_ada' kalau tidak ada gambar yang cocok.
 async function kirimKartuKategori(jid, kategori) {
+  const peta = petaHalaman();
+  const halaman = peta?.kategori?.[kategori.id];
+  if (halaman && halaman.length > 0) {
+    const hasil = await kirimHalamanMenu(jid, halaman);
+    if (hasil.adaFile) return 'kartu';
+  }
+  // Cadangan: kartu kategori lama / foto sampul (kalau halaman PDF belum diekspor)
   if (kategori.kartu_path) {
     const ok = await kirimGambarJikaAda(jid, path.join(DATA_MENU_DIR, kategori.kartu_path));
     if (ok) return 'kartu';
@@ -210,20 +250,15 @@ async function kirimKartuKategori(jid, kategori) {
   return 'tidak_ada';
 }
 
-// Kirim semua kartu kategori sekaligus (dipakai saat sambutan customer baru / minta lihat semua menu).
+// Minta menu = buku menu LENGKAP sebagai gambar (semua halaman berurutan).
 async function kirimSemuaKartuKategori(jid) {
-  const semuaKategori = db.getAllKategori();
-  if (semuaKategori.length === 0) {
-    console.log('⚠️  Tidak ada kategori di database, jalankan seed.js dulu.');
-    return false;
+  const peta = petaHalaman();
+  if (peta?.buku_menu?.length) {
+    const hasil = await kirimHalamanMenu(jid, peta.buku_menu, { paksa: true });
+    if (hasil.adaFile) return true;
   }
-  let adaYangTerkirim = false;
-  for (const kat of semuaKategori) {
-    const hasil = await kirimKartuKategori(jid, kat);
-    if (hasil !== 'tidak_ada') adaYangTerkirim = true;
-    await tunggu(400); // jeda kecil antar file biar urutannya rapi di WA
-  }
-  return adaYangTerkirim;
+  console.log('⚠️  Halaman buku menu belum ada, jalankan: python ekspor_menu.py');
+  return false;
 }
 
 function buatKonteksUntukAgent(jid) {
@@ -234,7 +269,6 @@ function buatKonteksUntukAgent(jid) {
     kirimKartuMenu,
     kirimKartuKategori,
     kirimSemuaKartuKategori,
-    kirimQrKekuranganKeCustomer,
   };
 }
 
@@ -268,15 +302,12 @@ async function handlePesanNonTeks(jid, jenisMedia) {
   let balasan;
 
   if (pesanan && pesanan.status === 'MENUNGGU_BAYAR') {
-    // Kemungkinan bukti transfer: teruskan info ke kasir (kasir yang memastikan di EDC/mutasi)
-    const operatorUtama = db.getAllOperators().find((o) => o.is_utama === 1);
-    if (operatorUtama) {
-      const infoMeja = customer.nomor_meja ? ` (meja ${customer.nomor_meja})` : '';
-      await kirimPesan(
-        operatorUtama.jid,
-        `ℹ️ ${customer.nama || jid.split('@')[0]}${infoMeja} mengirim ${jenisMedia}, kemungkinan bukti transfer untuk pesanan #${pesanan.id}. Mohon dicek manual nggih.`
-      );
-    }
+    // Kemungkinan bukti transfer: teruskan info ke semua kasir (kasir yang memastikan di EDC/mutasi)
+    const infoMeja = customer.nomor_meja ? ` (meja ${customer.nomor_meja})` : '';
+    await agent.kirimKeSemuaKasir(
+      { kirimPesan },
+      `ℹ️ ${customer.nama || jid.split('@')[0]}${infoMeja} mengirim ${jenisMedia}, kemungkinan bukti transfer untuk pesanan ${nomorPesanan(pesanan)}. Mohon dicek manual nggih.`
+    );
     balasan = 'Makasih Mas/Mbak, aku teruskan ke kasir buat dicek ya. Pesanan langsung jalan begitu pembayarannya terkonfirmasi 🙏';
   } else {
     balasan = 'Maaf ya Mas/Mbak, aku baru bisa baca pesan teks. Boleh ditulis aja pesannya?';
@@ -314,7 +345,7 @@ async function prosesSambutanCustomerBaru(jid, { kirimSapaan = false } = {}) {
   db.registerCustomer(jid);
 
   if (kirimSapaan) {
-    const sapaan = 'Sugeng rawuh di The Banjoemas Resto & Cafe, Mas/Mbak 🙏\nSudah di resto, atau mau datang nanti?\n1. Sudah di resto\n2. Datang nanti (sebutkan jamnya, misal 19.30)';
+    const sapaan = `Sugeng rawuh di The Banjoemas Resto & Cafe, Mas/Mbak. Aku ${config.namaAi()} 🙏\nSudah di resto, atau mau datang nanti?\n1. Sudah di resto\n2. Datang nanti (sebutkan jamnya, misal 19.30)`;
     await kirimPesan(jid, sapaan);
     db.simpanChatHistory(jid, 'assistant', sapaan);
   }
@@ -332,8 +363,18 @@ async function routeCustomerTerdaftar(jid, text) {
   const historiChat = db.getChatHistory(jid);
   const konteks = buatKonteksUntukAgent(jid);
 
+  // Rating pelayanan dan kuis dijawab KODE (angka "1-5" / nomor pilihan kuis), tanpa AI
+  const cepat = await agent.tangkapRatingDanKuis(jid, text, konteks);
+  if (cepat) {
+    await kirimPesan(jid, cepat);
+    db.simpanChatHistory(jid, 'user', text);
+    db.simpanChatHistory(jid, 'assistant', cepat);
+    return;
+  }
+
   // Jawaban "dipanggil apa" (Mas/Mbak) disimpan oleh kode, tidak menunggu AI memanggil tool
   agent.tangkapJawabanSapaan(jid, text, historiChat);
+  await agent.tangkapJawabanKedatangan(jid, text, historiChat);
 
   const hasil = await agent.jalankanAgent({
     systemPrompt: agent.SYSTEM_PROMPT_CUSTOMER + agent.buatBlokInfoResto() + agent.buatKonteksDinamisCustomer(jid),
@@ -356,13 +397,34 @@ async function routeCustomerTerdaftar(jid, text) {
     const balasan = agent.rapikanBalasanCustomer(jid, hasil.jawabanFinal, {
       pertama: historiChat.length === 0,
       rincianDitampilkan: (hasil.toolBerhasil || []).includes('tampilkan_rincian_order'),
+      sudahDilayani: (hasil.toolBerhasil || []).some((t) => ['lihat_menu', 'buat_order', 'rekomendasi_menu', 'cari_menu_atribut', 'tanya_detail_menu'].includes(t)),
     });
     await kirimPesan(jid, balasan);
     db.simpanChatHistory(jid, 'assistant', balasan);
+  } else if (!(hasil.toolBerhasil || []).length) {
+    // AI tidak menjawab dan tidak ada tindakan: jangan diam. Tanya balik dengan pilihan bernomor.
+    const tanya = 'Maaf, aku kurang nangkep maksudnya. Mau yang mana nih?\n1. Lihat menu\n2. Pesan makanan/minuman\n3. Info resto (jam buka, live music, booking)\n4. Panggil waiter';
+    await kirimPesan(jid, tanya);
+    db.simpanChatHistory(jid, 'assistant', tanya);
+  }
+
+  // Pesan tambahan dari sistem (misal tawaran kuis) dikirim SETELAH balasan AI sebagai pesan terpisah
+  const tambahan = db.getPendingState(jid, 'tambahan_balasan');
+  if (tambahan) {
+    db.clearPendingState(jid, 'tambahan_balasan');
+    await tunggu(600);
+    await kirimPesan(jid, tambahan);
+    db.simpanChatHistory(jid, 'assistant', tambahan);
   }
 }
 
 async function handleOperatorMessage(jid, text) {
+  // Kasir menjawab "foto QR ini untuk yang mana?" -> kode yang meneruskan, tanpa AI
+  if (await tangkapJawabanFotoQr(jid, text)) {
+    db.simpanChatHistory(jid, 'user', text);
+    return;
+  }
+
   const historiChat = db.getChatHistory(jid);
   const konteks = buatKonteksUntukAgent(jid);
 
@@ -389,51 +451,54 @@ async function handleOperatorMessage(jid, text) {
   }
 }
 
-// Caption QR tanpa AI (dipakai kalau AI gagal/kosong): tetap memuat nomor pesanan, rincian, dan total.
-function captionQrCadangan(pesanan, items, nominalTransfer, preOrder) {
-  const baris = items
-    .filter((i) => i.status_item === 'AKTIF')
-    .map((i, n) => `${n + 1}. ${i.nama_snapshot}${i.tipe === 'TAKE_AWAY' ? ' (take away)' : ''} x${i.qty} = ${rp(i.harga_satuan_snapshot * i.qty)}`);
-  return [
-    `Pesanan ${nomorPesanan(pesanan)}${preOrder ? ` (datang jam ${pesanan.jam_datang})` : pesanan.nomor_meja ? ` (meja ${pesanan.nomor_meja})` : ''}:`,
-    ...baris,
-    `Total ${rp(nominalTransfer)}. Scan QR ini ya, bayar persis segitu 🙏`,
-    preOrder ? `Nanti di resto, lapor ke waiter sebut nomor pesanan ${nomorPesanan(pesanan)} ya.` : '',
-  ].filter(Boolean).join('\n');
+// ========== QR DINAMIS: kasir membuat QR per pesanan di POS, memfoto, lalu mengirim fotonya ke bot ==========
+const DIR_QR_MASUK = path.join(__dirname, 'images', 'qr_masuk');
+
+// Caption yang menyertai foto QR ke customer. Dibuat KODE (bukan AI) supaya angkanya selalu sama dengan nota.
+function captionQr(p) {
+  if (p.jenis === 'PESANAN') {
+    const pesanan = db.getPesananById(p.ref_ids[0]);
+    const customer = db.getCustomer(p.customer_jid);
+    const items = db.getItemsByPesananId(pesanan.id);
+    const preOrder = !!pesanan.jam_datang && customer.status_kedatangan !== 'DI_RESTO';
+    let lokasi = '';
+    if (preOrder) lokasi = ` (datang jam ${pesanan.jam_datang})`;
+    else if (pesanan.nomor_meja) lokasi = ` (meja ${pesanan.nomor_meja})`;
+    return [
+      `Pesanan ${nomorPesanan(pesanan)}${lokasi}:`,
+      ...nota.barisItem(items),
+      ...nota.barisTotal(nota.hitungDariItem(items)),
+      `Scan QR ini ya, bayar persis ${rp(p.nominal)} 🙏`,
+      preOrder ? `Nanti di resto, lapor ke waiter sebut nomor pesanan ${nomorPesanan(pesanan)} ya.` : '',
+    ].filter(Boolean).join('\n');
+  }
+  if (p.jenis === 'BILL') {
+    const daftar = p.ref_ids.map((id) => db.getPesananById(id)).filter(Boolean);
+    const { teks, total } = nota.teksNotaGabungan(daftar);
+    return `${p.label}:\n${teks}\nScan QR ini ya, bayar persis ${rp(total.grandTotal)} 🙏`;
+  }
+  if (p.jenis === 'TAGIHAN') {
+    const t = db.getTagihanById(p.ref_ids[0]);
+    const pesanan = db.getPesananById(t.pesanan_id);
+    return `Kekurangan bayar untuk pesanan ${nomorPesanan(pesanan)}: ${rp(p.nominal)} (sudah termasuk PPN).\nScan QR ini ya, bayar persis ${rp(p.nominal)} 🙏`;
+  }
+  if (p.jenis === 'DEPOSIT') {
+    const b = db.getBooking(p.ref_ids[0]);
+    return `Deposit booking #${b.id} (${b.tanggal} jam ${b.jam}): ${rp(p.nominal)}.\nScan QR ini ya, bayar persis ${rp(p.nominal)} 🙏`;
+  }
+  return `Scan QR ini ya, bayar persis ${rp(p.nominal)} 🙏`;
 }
 
-async function kirimQrKeCustomer(pesananId, nominalTransfer) {
-  const pesanan = db.getPesananById(pesananId);
-  const customer = db.getCustomer(pesanan.customer_jid);
-  const items = db.getItemsByPesananId(pesananId);
-
-  const preOrder = !!pesanan.jam_datang && customer.status_kedatangan !== 'DI_RESTO';
-  const pesanTotal = (await ai.generatePesanTotalDanQr(
-    [customer.sapaan, customer.nama].filter(Boolean).join(' ') || customer.nama,
-    items,
-    pesanan.subtotal,
-    nominalTransfer,
-    pesanan.nomor_meja,
-    { nomorPesanan: nomorPesanan(pesanan), jamDatang: preOrder ? pesanan.jam_datang : null }
-  )) || captionQrCadangan(pesanan, items, nominalTransfer, preOrder);
-
-  const qrPath = path.join(__dirname, 'images', 'qr', 'qris-statis.jpg');
-
-  if (!fs.existsSync(qrPath)) {
-    console.log('⚠️  File QR statis tidak ditemukan di images/qr/qris-statis.jpg');
-    await kirimPesan(
-        customer.jid,
-        `${pesanTotal}\n\n(QR belum tersedia, mohon hubungi kasir untuk info rekening/QR manual)`
-    );
+// Kirim foto QR yang sudah disimpan kasir ke customer pemesan
+async function kirimQrKeCustomer(permintaanId) {
+  const p = db.getPermintaanQr(permintaanId);
+  if (!p || !p.qr_path || !fs.existsSync(p.qr_path)) {
+    console.log(`⚠️  Foto QR permintaan #${permintaanId} tidak ditemukan.`);
     return false;
   }
-
   try {
-    await sock.sendMessage(customer.jid, {
-      image: fs.readFileSync(qrPath),
-      caption: pesanTotal,
-    });
-    console.log(`✅ QR + total terkirim ke ${customer.jid} untuk pesanan ${nomorPesanan(pesanan)} (${rp(nominalTransfer)})`);
+    await sock.sendMessage(p.customer_jid, { image: fs.readFileSync(p.qr_path), caption: captionQr(p) });
+    console.log(`✅ QR ${p.label} (${rp(p.nominal)}) terkirim ke ${p.customer_jid}`);
     return true;
   } catch (err) {
     console.error('❌ Gagal kirim QR:', err.message);
@@ -441,31 +506,141 @@ async function kirimQrKeCustomer(pesananId, nominalTransfer) {
   }
 }
 
-async function kirimQrKekuranganKeCustomer(tagihanId) {
-  const tagihan = db.getTagihanById(tagihanId);
-  const pesanan = db.getPesananById(tagihan.pesanan_id);
-  const jid = pesanan.customer_jid;
+function mejaPermintaan(p) {
+  if (p.jenis === 'DEPOSIT') return null;
+  const c = db.getCustomer(p.customer_jid);
+  const dariPesanan = p.jenis === 'TAGIHAN' ? null : db.getPesananById(p.ref_ids[0])?.nomor_meja;
+  return db.normalisasiMeja(c.nomor_meja) || db.normalisasiMeja(dariPesanan);
+}
 
-  const caption =
-    `Kekurangan bayar untuk pesanan ${nomorPesanan(pesanan)}: ${rp(tagihan.nominal)}.\n` +
-    `Scan QR ini ya, bayar persis ${rp(tagihan.nominal_transfer)} 🙏`;
+// Mencari permintaan dari teks caption kasir: "pesanan 7", "#7", "meja 5", "booking 3", atau angka saja
+function permintaanDariTeks(teks) {
+  const t = String(teks || '').toLowerCase();
+  const menunggu = db.getPermintaanQrMenunggu();
+  if (menunggu.length === 0) return { daftar: [], dicari: false };
 
-  const qrPath = path.join(__dirname, 'images', 'qr', 'qris-statis.jpg');
+  const booking = t.match(/booking\s*#?\s*(\d+)/);
+  if (booking) return { daftar: menunggu.filter((p) => p.jenis === 'DEPOSIT' && p.ref_ids.includes(Number(booking[1]))), dicari: true };
 
-  if (!fs.existsSync(qrPath)) {
-    console.log('⚠️  File QR statis tidak ditemukan di images/qr/qris-statis.jpg');
-    await kirimPesan(jid, `${caption}\n\n(QR belum tersedia, mohon hubungi kasir untuk info pembayaran)`);
-    return false;
+  const meja = t.match(/meja\s*([a-z]{0,4}\d{1,3}[a-z]?)/);
+  if (meja) {
+    const m = db.normalisasiMeja(meja[1]);
+    return { daftar: menunggu.filter((p) => mejaPermintaan(p) === m), dicari: true };
   }
 
+  const nomor = t.match(/(?:pesanan|pes|order|#|no\.?|nomor)\s*#?\s*(\d{1,4})/) || t.match(/^\s*#?(\d{1,4})\s*$/);
+  if (nomor) {
+    const n = Number(nomor[1]);
+    return {
+      daftar: menunggu.filter((p) => ['PESANAN', 'BILL'].includes(p.jenis) && p.ref_ids.some((id) => db.getPesananById(id)?.no_harian === n)),
+      dicari: true,
+    };
+  }
+  return { daftar: [], dicari: false };
+}
+
+const deskripsiPermintaan = (p) => `${p.label} | ${agent.sebutCustomer(db.getCustomer(p.customer_jid), p.customer_jid)} | ${rp(p.nominal)}`;
+
+// Simpan foto di permintaan, teruskan ke customer, kabari semua kasir. Gagal kirim = permintaan kembali menunggu.
+async function teruskanQrKeCustomer(permintaan, qrPath) {
+  db.setPermintaanQrTerkirim(permintaan.id, qrPath);
+  const ok = await kirimQrKeCustomer(permintaan.id);
+  if (!ok) db.db.prepare(`UPDATE permintaan_qr SET status = 'MENUNGGU' WHERE id = ?`).run(permintaan.id);
+  const info = ok
+    ? `✅ QR ${deskripsiPermintaan(permintaan)} sudah diteruskan ke customer.`
+    : `❌ QR ${permintaan.label} gagal diteruskan ke customer. Coba kirim lagi fotonya.`;
+  await agent.kirimKeSemuaKasir({ kirimPesan }, info);
+  return ok;
+}
+
+// Ambigu: simpan foto, tanya kasir dengan pilihan bernomor. Jawabannya ditangkap di tangkapJawabanFotoQr.
+async function tanyaPermintaan(jid, qrPath, daftar, kalimat) {
+  db.setPendingState(jid, 'qr_foto', { qrPath, ids: daftar.map((p) => p.id) });
+  await kirimPesan(jid, `${kalimat}\n${daftar.map((p, n) => `${n + 1}. ${deskripsiPermintaan(p)}`).join('\n')}\nBalas nomornya ya.`);
+}
+
+// Kasir mengirim foto. Penentuan pesanan: (1) reply ke tiket, (2) caption, (3) satu-satunya yang menunggu. Kalau ambigu, TANYA.
+async function handleOperatorMedia(jid, message, isi) {
+  const gambar = isi.imageMessage;
+  if (!gambar) return;
+
+  let buffer;
   try {
-    await sock.sendMessage(jid, { image: fs.readFileSync(qrPath), caption });
-    console.log(`✅ QR kekurangan terkirim ke ${jid} untuk tagihan #${tagihanId} (${rp(tagihan.nominal_transfer)})`);
-    return true;
+    buffer = await downloadMediaMessage(message, 'buffer', {}, { logger: LOGGER_DIAM, reuploadRequest: sock.updateMediaMessage });
   } catch (err) {
-    console.error('❌ Gagal kirim QR kekurangan:', err.message);
-    return false;
+    console.error('❌ Gagal mengunduh foto kasir:', err.message);
+    await kirimPesan(jid, 'Fotonya gagal terunduh, boleh kirim ulang ya.');
+    return;
   }
+  fs.mkdirSync(DIR_QR_MASUK, { recursive: true });
+  const qrPath = path.join(DIR_QR_MASUK, `qr_${Date.now()}.jpg`);
+  fs.writeFileSync(qrPath, buffer);
+
+  const caption = (gambar.caption || '').trim();
+  const stanzaId = gambar.contextInfo?.stanzaId;
+  let target = stanzaId ? db.getPermintaanDariTiket(stanzaId) : null;
+  if (target && target.status !== 'MENUNGGU') {
+    const alasan = target.status === 'BATAL' ? 'sudah DIBATALKAN (pesanan berubah)' : 'sudah pernah diproses';
+    await kirimPesan(jid, `Tiket ${target.label} ${alasan}, jadi fotonya tidak diteruskan. Kalau tetap perlu, tulis nomor pesanan di caption.`);
+    return;
+  }
+
+  if (!target) {
+    const { daftar, dicari } = permintaanDariTeks(caption);
+    if (daftar.length === 1) {
+      target = daftar[0];
+    } else if (daftar.length > 1) {
+      await tanyaPermintaan(jid, qrPath, daftar, 'Ada beberapa yang cocok, foto QR ini untuk yang mana?');
+      return;
+    } else if (dicari) {
+      await kirimPesan(jid, `Tidak ada permintaan QR yang menunggu untuk "${caption}". Cek nomornya ya.`);
+      return;
+    }
+  }
+
+  if (!target) {
+    const menunggu = db.getPermintaanQrMenunggu();
+    if (menunggu.length === 0) {
+      await kirimPesan(jid, 'Tidak ada permintaan QR yang sedang menunggu. Kalau ini untuk pesanan tertentu, tulis nomor pesanannya di caption.');
+      return;
+    }
+    if (menunggu.length > 1) {
+      await tanyaPermintaan(jid, qrPath, menunggu, 'Foto QR ini untuk yang mana?');
+      return;
+    }
+    target = menunggu[0];
+  }
+
+  await teruskanQrKeCustomer(target, qrPath);
+}
+
+// Jawaban kasir atas pertanyaan "untuk yang mana" ("1", "2", atau nomor pesanan). Mengembalikan true kalau ditangani.
+async function tangkapJawabanFotoQr(jid, text) {
+  const pending = db.getPendingState(jid, 'qr_foto');
+  if (!pending) return false;
+  const t = String(text || '').trim().toLowerCase();
+  const kandidat = pending.ids.map((id) => db.getPermintaanQr(id)).filter((p) => p && p.status === 'MENUNGGU');
+  if (kandidat.length === 0) { db.clearPendingState(jid, 'qr_foto'); return false; }
+
+  let target = null;
+  const angka = t.match(/^(?:nomor |no |pilihan )?(\d{1,2})$/);
+  if (angka && kandidat[Number(angka[1]) - 1]) target = kandidat[Number(angka[1]) - 1];
+  if (!target) {
+    const { daftar } = permintaanDariTeks(t);
+    const cocok = daftar.filter((p) => kandidat.some((k) => k.id === p.id));
+    if (cocok.length === 1) target = cocok[0];
+  }
+  if (!target) {
+    if (/^(batal|skip|nggak|gak|tidak)\b/.test(t)) {
+      db.clearPendingState(jid, 'qr_foto');
+      await kirimPesan(jid, 'Oke, fotonya tidak diteruskan.');
+      return true;
+    }
+    return false; // bukan jawaban pertanyaan, biarkan agent menangani
+  }
+  db.clearPendingState(jid, 'qr_foto');
+  await teruskanQrKeCustomer(target, pending.qrPath);
+  return true;
 }
 
 process.on('unhandledRejection', (err) => {
@@ -513,9 +688,41 @@ process.stdin.on('data', (data) => {
 });
 
 // Timer didaftarkan SEKALI di luar startBot, supaya tidak menumpuk tiap reconnect
+// Permintaan QR yang belum dijawab kasir: ingatkan (3 menit pertama, lalu tiap 5 menit, maksimal 4 kali)
+async function cekPengingatQr() {
+  if (!sock?.user) return;
+  const batasMenit = Number(config.info().pengingat_qr_menit || 3);
+  for (const p of db.getPermintaanQrMenunggu()) {
+    if (p.pengingat >= 4) continue;
+    const acuan = p.pengingat_at || p.created_at.replace(' ', 'T') + 'Z';
+    const selang = Date.now() - new Date(acuan).getTime();
+    if (selang < (p.pengingat === 0 ? batasMenit : 5) * 60 * 1000) continue;
+    db.catatPengingatQr(p.id);
+    await agent.kirimKeSemuaKasir({ kirimPesan }, `⏳ Customer masih menunggu QR ${deskripsiPermintaan(p)}. Kirim foto QR-nya ke sini sebagai reply tiket MINTA QR ya.`);
+  }
+}
+
+// Meja yang belum kosong setelah 3 jam sejak pesanan pertama: tanya semua kasir "sudah kosong?". Diulang tiap 30 menit.
+async function cekTimeoutMeja() {
+  if (!sock?.user) return;
+  const batasJam = Number(config.info().timeout_meja_jam || 3);
+  for (const k of db.getKunjunganPerluDitanya(batasJam)) {
+    const c = db.getCustomer(k.customer_jid);
+    const meja = k.nomor_meja || c.nomor_meja || '-';
+    const lama = Math.floor((Date.now() - new Date(k.mulai_at).getTime()) / 3600000);
+    db.updateKunjungan(k.id, { ditanya_kasir_at: new Date().toISOString(), jumlah_ditanya: k.jumlah_ditanya + 1 });
+    await agent.kirimKeSemuaKasir(
+      { kirimPesan },
+      `⏰ Meja ${meja} (${agent.sebutCustomer(c, k.customer_jid)}) sudah ${lama} jam. Sudah kosong? Kalau sudah, balas "meja ${meja} kosong" ya.`
+    );
+  }
+}
+
 setInterval(() => {
   cekTimeoutKeputusanHabis().catch((err) => console.error('❌ Error cek timeout:', err.message));
   cekJadwalPreOrder().catch((err) => console.error('❌ Error cek jadwal pre-order:', err.message));
+  cekPengingatQr().catch((err) => console.error('❌ Error cek pengingat QR:', err.message));
+  cekTimeoutMeja().catch((err) => console.error('❌ Error cek timeout meja:', err.message));
 }, 60 * 1000);
 
 if (!db.getInfoResto('aturan_layanan')) {
@@ -523,3 +730,10 @@ if (!db.getInfoResto('aturan_layanan')) {
 }
 
 startBot();
+// Dipakai skrip uji (require dari luar). Saat dijalankan langsung (node index.js) tidak ada efeknya.
+if (require.main !== module) {
+  module.exports = {
+    handleOperatorMedia, handleOperatorMessage, tangkapJawabanFotoQr, permintaanDariTeks, kirimQrKeCustomer,
+    cekPengingatQr, cekTimeoutMeja, kirimKartuKategori, kirimSemuaKartuKategori, routeCustomerTerdaftar, captionQr,
+  };
+}
