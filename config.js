@@ -4,8 +4,15 @@ const fs = require('fs');
 const path = require('path');
 const { ZONA_BOT, parseJam, formatJam, rp } = require('./format');
 
-const FILE_INFO = path.join(__dirname, 'data_menu', 'info_resto.json');
-const FILE_KUIS = path.join(__dirname, 'data_menu', 'kuis.json');
+// File data dibaca dari data_menu/ (milik pemilik, diedit di VPS). Kalau belum ada di sana, dipakai salinan bawaan
+// di data_default/ (ikut git), jadi fitur tidak diam-diam mati kalau file lupa dikirim ke VPS.
+function jalurData(nama) {
+  const utama = path.join(__dirname, 'data_menu', nama);
+  if (fs.existsSync(utama)) return utama;
+  return path.join(__dirname, 'data_default', nama);
+}
+const FILE_INFO = () => jalurData('info_resto.json');
+const FILE_KUIS = () => jalurData('kuis.json');
 
 const cache = new Map(); // path -> { mtime, data }
 
@@ -36,8 +43,8 @@ const INFO_CADANGAN = {
   pengingat_qr_menit: 3,
 };
 
-function info() { return bacaJson(FILE_INFO, INFO_CADANGAN); }
-function kuis() { return bacaJson(FILE_KUIS, { soal: [], soal_per_ronde: 5 }); }
+function info() { return bacaJson(FILE_INFO(), INFO_CADANGAN); }
+function kuis() { return bacaJson(FILE_KUIS(), { soal: [], soal_per_ronde: 5 }); }
 
 // ---------- PAJAK ----------
 function ppnPersen() { return Number(info().pajak?.ppn_persen ?? 10); }
@@ -120,7 +127,7 @@ function teksRuangVip() {
     `${v.nama}`,
     `Kapasitas ${v.kapasitas}.`,
     `Gratis pemakaian ${v.gratis_jam} jam dengan minimum order ${rp(v.minimum_spend)}.`,
-    v.deposit_catatan || `Deposit ${rp(v.deposit)} dibayar di awal.`,
+    v.deposit_catatan || `DP ${rp(v.deposit)} dibayar di awal.`,
     'Fasilitas:',
     ...(v.fasilitas || []).map((f, i) => `${i + 1}. ${f}`),
   ].join('\n');
@@ -160,7 +167,7 @@ const namaAi = () => info().nama_ai || 'Cimendo';
 const menuMargin = () => info().menu_margin || [];
 
 module.exports = {
-  info, kuis, ppnPersen, hitungTagihan, denganPpn,
+  jalurData, info, kuis, ppnPersen, hitungTagihan, denganPpn,
   statusBuka, teksJamOperasional, teksLiveMusic, teksRuangVip, teksFullBooking, teksInfoLengkap,
   namaAi, menuMargin, NAMA_HARI, fmtJam, menitDariJam, formatJam,
 };

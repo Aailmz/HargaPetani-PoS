@@ -1,0 +1,54 @@
+{
+  "_catatan": "DUMMY: soal sementara untuk menguji alur kuis. Ganti dengan soal asli dari pemilik. Format: pertanyaan, opsi (2-4 pilihan), jawaban (nomor opsi mulai 1), info (penjelasan singkat setelah dijawab).",
+  "soal_per_ronde": 5,
+  "soal": [
+    {
+      "pertanyaan": "Gorengan khas Banyumas yang tipis dibalut adonan tepung dan irisan daun bawang adalah...",
+      "opsi": ["Mendoan", "Bakwan", "Pisang goreng", "Tahu isi"],
+      "jawaban": 1,
+      "info": "Mendoan, dari kata 'mendo' yang artinya setengah matang."
+    },
+    {
+      "pertanyaan": "Kota mana yang jadi pusat budaya Banyumasan?",
+      "opsi": ["Purwokerto", "Semarang", "Solo", "Yogyakarta"],
+      "jawaban": 1,
+      "info": "Purwokerto, ibu kota Kabupaten Banyumas."
+    },
+    {
+      "pertanyaan": "Logat khas Banyumasan sering disebut...",
+      "opsi": ["Ngapak", "Arek", "Betawi", "Sunda"],
+      "jawaban": 1,
+      "info": "Ngapak, dengan huruf 'k' dan 'a' yang diucapkan jelas."
+    },
+    {
+      "pertanyaan": "Minuman tradisional dari cendol yang terkenal dari Banjarnegara adalah...",
+      "opsi": ["Dawet ayu", "Bandrek", "Wedang ronde", "Es doger"],
+      "jawaban": 1,
+      "info": "Dawet ayu Banjarnegara."
+    },
+    {
+      "pertanyaan": "Dalam bahasa Banyumasan, 'inyong' artinya...",
+      "opsi": ["Saya", "Kamu", "Dia", "Kita"],
+      "jawaban": 1,
+      "info": "Inyong = saya."
+    },
+    {
+      "pertanyaan": "Dalam bahasa Banyumasan, 'kencot' artinya...",
+      "opsi": ["Lapar", "Ngantuk", "Capek", "Kenyang"],
+      "jawaban": 1,
+      "info": "Kencot = lapar."
+    },
+    {
+      "pertanyaan": "Sroto Sokaraja biasanya disajikan dengan bumbu...",
+      "opsi": ["Kacang", "Santan kuning", "Petis", "Kecap manis saja"],
+      "jawaban": 1,
+      "info": "Sroto Sokaraja khas dengan bumbu kacang."
+    },
+    {
+      "pertanyaan": "Gunung tertinggi di Jawa Tengah yang berada di wilayah Banyumas adalah...",
+      "opsi": ["Gunung Slamet", "Gunung Merapi", "Gunung Sindoro", "Gunung Lawu"],
+      "jawaban": 1,
+      "info": "Gunung Slamet, 3.428 mdpl."
+    }
+  ]
+}

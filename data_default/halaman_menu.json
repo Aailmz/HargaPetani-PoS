@@ -1,0 +1,67 @@
+{
+  "_catatan": "Pemetaan halaman PDF buku menu (gambar di data_menu/halaman_menu/pNN.jpg, dibuat oleh ekspor_menu.py). Kartu per-menu (data_menu/kartu/) TIDAK berubah. Halaman yang baru saja dikirim (30 detik) tidak dikirim dobel dalam satu permintaan. caption_halaman (nomor halaman -> teks) opsional, kosong = tanpa caption.",
+  "buku_menu": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13
+  ],
+  "kategori": {
+    "gorengan": [
+      3
+    ],
+    "rebusan_kukus": [
+      3
+    ],
+    "soto_sop": [
+      5,
+      6
+    ],
+    "nasi_mie": [
+      5
+    ],
+    "tongseng_gulai": [
+      5
+    ],
+    "sate_bakar": [
+      6
+    ],
+    "cimplung": [
+      7
+    ],
+    "espresso_based": [
+      9
+    ],
+    "manual_brew": [
+      9
+    ],
+    "flavored_coffee": [
+      9
+    ],
+    "non_coffee": [
+      10
+    ],
+    "flavored_tea": [
+      10
+    ],
+    "tradisional": [
+      11
+    ],
+    "refreshments": [
+      13
+    ],
+    "jus_teh_air": [
+      13
+    ]
+  },
+  "caption_halaman": {}
+}

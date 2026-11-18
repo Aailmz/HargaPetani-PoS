@@ -1,0 +1,87 @@
+{
+  "_catatan": "File ini diedit pemilik tanpa menyentuh kode. Bagian bertanda DUMMY menunggu data asli dari pemilik. Bot membaca ulang file ini setiap kali berubah (tidak perlu restart).",
+  "nama_ai": "Cimendo",
+  "nama_resto": "The Banjoemas Resto & Cafe",
+  "alamat": "Plaza Taman Ismail Marzuki, Jl. Cikini Raya No.73, Cikini, Jakarta Pusat 10330",
+  "telepon_reservasi": "08138866677",
+  "instagram": "@thebanjoemas",
+  "pajak": {
+    "ppn_persen": 10,
+    "service_charge_persen": 0
+  },
+  "jam_operasional": [
+    {
+      "label": "Minggu - Kamis",
+      "hari": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "buka": "10:00",
+      "tutup": "23:00",
+      "last_order": "22:30"
+    },
+    {
+      "label": "Jumat & Sabtu",
+      "hari": [
+        5,
+        6
+      ],
+      "buka": "10:00",
+      "tutup": "24:00",
+      "last_order": "23:30"
+    }
+  ],
+  "kapasitas_seat": 80,
+  "live_music": [
+    {
+      "hari": 2,
+      "label": "Selasa",
+      "mulai": "19:00",
+      "selesai": "22:30"
+    },
+    {
+      "hari": 6,
+      "label": "Sabtu",
+      "mulai": "19:00",
+      "selesai": "23:00"
+    }
+  ],
+  "ruang_vip": {
+    "nama": "Ruang Meeting Cablaka (VIP)",
+    "kapasitas": "25-30 orang",
+    "gratis_jam": 3,
+    "minimum_spend": 2000000,
+    "deposit": 400000,
+    "deposit_catatan": "DP Rp400.000 wajib dibayar di awal untuk mengunci booking, dan dihitung sebagai bagian dari minimum spend Rp2.000.000.",
+    "fasilitas": [
+      "LCD TV",
+      "Sound system",
+      "White board",
+      "Bisa smoking atau non smoking",
+      "WiFi area"
+    ]
+  },
+  "full_booking": {
+    "kapasitas": 80,
+    "syarat": "DUMMY: syarat dan minimum spend booking seluruh resto menyusul dari pemilik. Untuk sekarang pengajuan diteruskan ke tim dan dibahas langsung."
+  },
+  "nasi": {
+    "id_menu": "nasi_putih",
+    "harga": 10000,
+    "catatan": "Tongseng belum termasuk nasi. Tidak ada menu yang sudah termasuk nasi."
+  },
+  "menu_margin": [
+    "sop_buntut",
+    "iga_bakar",
+    "edamame",
+    "cimplung_mix_plate",
+    "mendoan",
+    "teh_poci",
+    "dawet_banjarnegara"
+  ],
+  "timeout_meja_jam": 3,
+  "pengingat_qr_menit": 3
+}
