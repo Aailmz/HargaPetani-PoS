@@ -48,8 +48,9 @@ function faseBerikutnya(alur) {
 async function kirimKartuKelompok(konteks, kelompok) {
   const daftar = db.getKategoriByKelompok(kelompok);
   let terkirim = false;
+  const batch = new Set(); // halaman yang dipakai bersama beberapa kategori tidak dikirim dobel dalam satu permintaan
   for (const kat of daftar) {
-    const hasil = await konteks.kirimKartuKategori(konteks.jid, kat);
+    const hasil = await konteks.kirimKartuKategori(konteks.jid, kat, batch);
     if (hasil !== 'tidak_ada') terkirim = true;
   }
   return { kategori: daftar.map((k) => k.nama), terkirim };
@@ -1148,8 +1149,9 @@ ALUR PESAN 3 FASE (PANDUAN LEMBUT, BUKAN JALUR KAKU):
 - Tujuannya supaya customer tidak dibanjiri semua menu: menu dikirim BERTAHAP per bagian. Menu LENGKAP (semua halaman) HANYA dikirim kalau customer EKSPLISIT memintanya ("menu", "buku menu", "semua menu", "lihat semua"). "Ada apa aja", "yang enak apa", "bingung" BUKAN permintaan menu lengkap: jawab dengan pilihan jalur atau rekomendasi_menu.
 - Urutan: jalur NYEMIL = camilan -> minuman -> makan berat. Jalur MAKAN BERAT = makan berat -> minuman -> camilan.
 - Awal: setelah menyapa, tanya SATU hal (DAFTAR BERNOMOR): "1. Makan berat" dan "2. Nyemil". Jawaban -> pilih_jalur (gambar menu bagian pertama dikirim otomatis, jangan baca ulang harga). Kalau customer langsung memesan, menyebut bagian/kategori, atau bertanya hal lain, LAYANI itu dan jangan memaksa memilih jalur (jalur ditentukan otomatis dari pilihannya).
+- UPSELL WAJIB KONSISTEN: setelah SETIAP pesanan masuk, lanjutkan menawarkan bagian berikutnya yang BELUM dipesan sesuai instruksi_alur dari hasil buat_order, walau customer sebelumnya sudah melihat menu lengkap atau bertanya acak. Berhenti hanya kalau customer menolak tawaran itu atau mengakhiri pesanan. Jangan menggantinya dengan sekadar "Ada lagi?" selama masih ada bagian yang belum ditawarkan.
 - Fase berikutnya: UPSELL dulu, JANGAN langsung kirim menu. Tawarkan dengan 1 kalimat menggoda, sebut 1 rekomendasi (dari rekomendasi_upsell, itu menu prioritas). Menu bagian itu baru dikirim (lihat_menu) kalau customer tertarik.
-- FLEKSIBEL (PENTING): kapan saja customer boleh pesan apa pun dari bagian mana pun, minta lihat bagian lain, tanya acak, plin-plan, atau loncat. Layani LANGSUNG; sistem otomatis menganggap bagian yang sudah dipesan atau sudah dilihat customer selesai dan tidak ditawarkan lagi. JANGAN menolak atau menahan pesanan karena "belum fasenya". Kalau customer sudah melihat menu lengkap, tidak ada lagi tawaran fase.
+- FLEKSIBEL (PENTING): kapan saja customer boleh pesan apa pun dari bagian mana pun, minta lihat bagian lain, tanya acak, plin-plan, atau loncat. Layani LANGSUNG. Sebuah bagian dianggap selesai HANYA kalau customer sudah memesan dari bagian itu atau menolak tawarannya; MELIHAT menu (termasuk menu lengkap) tidak menghentikan tawaran. JANGAN menolak atau menahan pesanan karena "belum fasenya".
 - Customer chat pertama kali dianggap SUDAH duduk di resto dan makan di tempat (dine in). JANGAN menanyakan posisi/kedatangan dan JANGAN menanyakan dine in atau take away. Take away hanya kalau customer sendiri yang minta ("bungkus", "take away", "iga-nya dibungkus").
 - SETIAP kali ada menu yang masuk (buat_order), balas dalam SATU pesan: "Pesanan sementara:" + ringkasan SEMUA item di draft (format angka, tanpa harga), lalu pertanyaan/pilihan sesuai catatan_untuk_ai dan instruksi_alur dari hasil tool (daftar bernomor singkat, atau "Ada lagi?" kalau semua bagian sudah ditawarkan).
 - Menolak tawaran SPESIFIK ("nggak", "nggak dulu", "nggak usah minum") -> lewati_fase TANPA parameter: hanya bagian itu dilewati, sistem lalu menawarkan bagian berikutnya SEKALI. Ucapan MENGAKHIRI ("udah", "itu aja", "cukup", "gitu aja", "langsung bayar", "minta tagihan", "ga deh udah") -> LANGSUNG tampilkan_rincian_order, tanpa menawarkan apa-apa lagi dan tanpa bertanya "yakin?".
@@ -1172,6 +1174,7 @@ CARA KERJA:
 - PILIHAN SPESIFIK MENANG: kalau customer menyebut kategori (misal "minuman tradisional", "gorengan", "sate") atau menu tertentu, itu yang dilayani (kartu kategori / catat pesanan). JANGAN balik bertanya kelompok/kopi-nonkopi lagi. Hanya kata umum seperti "kopi" (3 kategori) atau "minuman" yang menampilkan beberapa halaman.
 - Customer menyebut JENIS minuman/makanan tertentu (tradisional, jamu, teh, jus, squash, espresso, flavored coffee, gorengan, sate, dll) -> lihat_menu dengan parameter kategori yang sesuai SAJA, JANGAN ikut memanggil dengan kelompok (kelompok hanya untuk kata umum: camilan, makan berat, kopi, non kopi, minuman). Satu panggilan cukup.
 - Tanya menu / minta lihat menu / minta foto-pdf menu -> panggil lihat_menu: "menu" saja = semua halaman (kosongkan parameter); menyebut bagian (camilan, minuman, kopi, makan berat, gorengan, dll) = parameter kelompok/kategori yang sesuai. Selalu kirim lagi kalau diminta lagi.
+- Customer menyebut NAMA UMUM yang punya banyak varian ("cimplung", "tongseng", "sate", "sroto", "nasi goreng", "mie") -> kirim nama umum itu apa adanya ke tanya_detail_menu, JANGAN memilih satu varian sendiri; tampilkan SEMUA varian sebagai daftar bernomor dengan harga supaya customer memilih (jawaban seperti "mix" / "yang ayam" lalu -> buat_order dengan nama lengkap menunya).
 - Tanya hal spesifik soal 1/beberapa menu (bahan, pedas, alergi, cocok buat siapa, dll) -> panggil tanya_detail_menu, lalu jawab dari deskripsi yang didapat dengan gaya ngobrol, bukan baca manual.
 - Customer tanya menu berdasarkan SIFAT ("yang nggak pedas?", "ada yang manis?", "yang pakai santan?", "dibakar atau digoreng?", "yang bukan daging sapi?", "yang berkuah?") -> panggil cari_menu_atribut dengan filter yang disebut saja (isi kelompok kalau konteksnya jelas). Tanya satu menu tertentu soal pedas/bahan/cara masak -> tanya_detail_menu (lihat field atribut). Data atribut itu PERKIRAAN: bilang "umumnya / biasanya", jangan menjamin, apalagi soal alergi (arahkan tanya kasir). Pedas hanya ada/tidak, jangan mengarang tingkat kepedasan. WAJIB memanggil cari_menu_atribut SETIAP kali ada pertanyaan sifat (walau pertanyaan mirip sudah dijawab sebelumnya), jangan menjawab dari ingatan percakapan.
 - Sebut menu + jumlah mau dipesan -> panggil buat_order (ini MENAMBAH ke draft).
@@ -1540,16 +1543,6 @@ async function jalankanAgent({ systemPrompt, tools, historiChat, pesanBaru, ekse
 
 // ========== EKSEKUTOR — CUSTOMER ==========
 
-// Bagian menu yang sudah dilihat customer atas permintaannya dianggap selesai (tidak ditawarkan lagi sebagai fase).
-// Menu lengkap = ketiga bagian dianggap sudah dilihat.
-function tandaiFaseDilihat(jid, daftarFase) {
-  const alur = db.getAlur(jid);
-  if (alur.tutup) return;
-  const selesai = [...new Set([...alur.selesai, ...daftarFase.filter(Boolean)])];
-  const jalur = alur.jalur || (daftarFase.length > 1 ? 'berat' : (daftarFase[0] === 'berat' ? 'berat' : 'camilan'));
-  db.setAlur(jid, { jalur, selesai, tutup: false });
-}
-
 async function eksekusiLihatMenu(args, konteks) {
   let { kategori, kelompok } = args || {};
   // "kopi" mencakup 3 kategori, "non kopi" banyak: itu KELOMPOK, bukan satu kategori
@@ -1566,7 +1559,6 @@ async function eksekusiLihatMenu(args, konteks) {
     }
     const idKat = daftarKat.map((k) => k.id);
     tetapkanJalurDariKategori(konteks.jid, idKat[0]);
-    tandaiFaseDilihat(konteks.jid, kelompok === 'minuman' || kelompok === 'kopi' || kelompok === 'non_kopi' ? ['minuman'] : [kelompok]);
     const kirim = await kirimKartuKelompok(konteks, kelompok);
     const habis = db.getAllMenu().filter((m) => idKat.includes(m.kategori_id) && !m.tersedia).map((m) => m.nama);
     const daftarMenu = db.getMenuTersedia().filter((m) => idKat.includes(m.kategori_id));
@@ -1608,7 +1600,6 @@ async function eksekusiLihatMenu(args, konteks) {
       .map((m) => m.nama);
 
     tetapkanJalurDariKategori(konteks.jid, katCocok.id);
-    tandaiFaseDilihat(konteks.jid, [faseDariKategoriId(katCocok.id)]);
     const hasilKirim = await konteks.kirimKartuKategori(konteks.jid, katCocok);
 
     return {
@@ -1631,7 +1622,6 @@ async function eksekusiLihatMenu(args, konteks) {
   }
 
   // ---------- Kasus 2: lihat semua menu / minta "menu pdf" / "foto menu" ----------
-  tandaiFaseDilihat(konteks.jid, ['berat', 'camilan', 'minuman']);
   const hasilKirim = await konteks.kirimSemuaKartuKategori(konteks.jid);
   const semuaKategori = db.getAllKategori();
   const semuaHabis = db.getAllMenu().filter((m) => !m.tersedia).map((m) => m.nama);
