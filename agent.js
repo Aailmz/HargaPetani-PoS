@@ -1,8 +1,12 @@
 const OpenAI = require('openai');
 const db = require('./db');
-const { rp, nomorPesanan, menitSekarangBot, parseJam, formatJam } = require('./format');
+const { rp, nomorPesanan, menitSekarangBot, parseJam, formatJam, tanggalBot } = require('./format');
 const ai = require('./ai');
 const { cariKandidatMenu, cariMenuBernamaUmum, normalisasiNama } = require('./matcher');
+const atribut = require('./atribut');
+const { distance } = require('fastest-levenshtein');
+const config = require('./config');
+const nota = require('./nota');
 
 const client = new OpenAI({
   apiKey: process.env.AI_API_KEY,
@@ -97,12 +101,21 @@ async function tawarkanFaseBerikutnya(konteks, { kirimKartu = false } = {}) {
   };
 }
 
-// 2 menu dari fase itu buat bahan upsell: andalan dulu, diacak biar tidak monoton
+// Menu margin tinggi (dari data_menu/info_resto.json) diprioritaskan di upsell dan rekomendasi
+const adaMargin = (m) => config.menuMargin().includes(m.id);
+
+// Urutan: menu margin dulu, lalu andalan, lalu sisanya; di dalam tiap golongan diacak supaya tidak monoton
+function urutkanPrioritas(menus, { acak = true } = {}) {
+  const skor = (m) => (adaMargin(m) ? 0 : m.andalan ? 1 : 2);
+  const dasar = acak ? [...menus].sort(() => Math.random() - 0.5) : [...menus];
+  return dasar.sort((a, b) => skor(a) - skor(b)); // sort stabil: urutan dalam satu golongan terjaga
+}
+
+// 2 menu dari fase itu buat bahan upsell: margin dulu, lalu andalan
 function rekomendasiUpsell(fase) {
   const idKat = db.getKategoriByKelompok(fase).map((k) => k.id);
   const tersedia = db.getMenuTersedia().filter((m) => idKat.includes(m.kategori_id));
-  const andalan = tersedia.filter((m) => m.andalan);
-  const sumber = [...(andalan.length >= 2 ? andalan : tersedia)].sort(() => Math.random() - 0.5);
+  const sumber = urutkanPrioritas(tersedia);
   return sumber.slice(0, 2)
     .map((m) => `${m.nama} (${rp(m.varian[0]?.harga ?? '-')}${m.deskripsi ? `, ${String(m.deskripsi).slice(0, 80)}` : ''})`);
 }
@@ -124,6 +137,45 @@ function labelItem(i) {
   return `${i.nama_snapshot} x${i.qty}${i.tipe === 'TAKE_AWAY' ? ' [take away]' : ''}${i.catatan ? ` (${i.catatan})` : ''}`;
 }
 
+// ========== PAGAR JAM, KASIR, DAN PERMINTAAN QR ==========
+
+// Pesanan baru hanya diterima saat buka dan sebelum last order (dicek KODE, bukan AI)
+function pagarJam() {
+  const s = config.statusBuka();
+  if (s.bisaPesan) return null;
+  return {
+    sukses: false,
+    resto_tutup: true,
+    alasan: s.alasan,
+    pesan: s.pesan,
+    catatan_untuk_ai: `Pesanan TIDAK bisa diterima sekarang. Sampaikan ramah dalam 1-2 kalimat: "${s.pesan}" Jangan mencatat pesanan. Info menu, info resto, dan booking tetap boleh dilayani.`,
+  };
+}
+
+// Kirim ke SEMUA kasir. Mengembalikan [{ jid, id }] (id pesan WA) supaya balasan "reply" bisa dipetakan.
+async function kirimKeSemuaKasir(konteks, pesan) {
+  const hasil = [];
+  for (const op of db.getAllOperators()) {
+    try {
+      const res = await konteks.kirimPesan(op.jid, pesan);
+      db.simpanChatHistory(op.jid, 'assistant', pesan); // supaya balasan kasir punya konteks di histori
+      hasil.push({ jid: op.jid, id: res?.key?.id || null });
+    } catch (err) {
+      console.error(`❌ Gagal kirim ke kasir ${op.jid}:`, err.message);
+    }
+  }
+  return hasil;
+}
+
+// Kirim permintaan QR ke semua kasir dan catat id pesannya
+async function kirimTiketPermintaanQr(konteks, permintaan, teks) {
+  const terkirim = await kirimKeSemuaKasir(konteks, teks);
+  for (const t of terkirim) db.simpanTiketKasir(t.id, t.jid, permintaan.id);
+  return terkirim.length > 0;
+}
+
+const sebutCustomer = (c, jid) => [c.sapaan, c.nama].filter(Boolean).join(' ') || (jid ? jid.split('@')[0] : '-');
+
 // Blok teks yang ditempel ke akhir system prompt customer, supaya LLM tahu kondisi
 // nyata walau histori chat hanya berisi teks (tanpa hasil tool).
 function buatKonteksDinamisCustomer(jid) {
@@ -132,14 +184,35 @@ function buatKonteksDinamisCustomer(jid) {
   const customer = db.getCustomer(jid);
 
   if (db.getChatHistory(jid, 1).length === 0) {
-    baris.push('- Ini chat PERTAMA customer. Balas SATU pesan sambutan (pengecualian aturan 1 kalimat) dengan format: "Sugeng rawuh di The Banjoemas Resto & Cafe, Mas/Mbak" disambung 1 kalimat hangat soal resto khas Banyumas; lalu 1 kalimat tanya kedatangan; lalu pilihannya sebagai DAFTAR BERNOMOR, satu opsi per baris: "1. Sudah di resto" dan "2. Datang nanti (sebutkan jamnya, misal 19.30)". JANGAN tanya dine in/take away (default dine in, customer akan minta sendiri kalau mau take away). Jangan kirim menu dulu dan jangan tanya makan berat/nyemil dulu. Kalau customer langsung memesan menu, sapa singkat lalu proses pesanannya.');
+    baris.push(`- Ini chat PERTAMA customer. Balas SATU pesan sambutan (pengecualian aturan 1 kalimat) dengan format: "Sugeng rawuh di The Banjoemas Resto & Cafe, Mas/Mbak. Aku ${config.namaAi()}" disambung 1 kalimat hangat soal resto khas Banyumas; lalu 1 kalimat tanya kedatangan; lalu pilihannya sebagai DAFTAR BERNOMOR, satu opsi per baris: "1. Sudah di resto" dan "2. Datang nanti (sebutkan jamnya, misal 19.30)". JANGAN tanya dine in/take away di awal (ditanya di akhir, sebelum rincian). Jangan kirim menu dulu dan jangan tanya makan berat/nyemil dulu. Kalau customer langsung memesan menu atau menyebut kategori/menu tertentu (misal "minuman tradisional", "gorengan", lihat hasil tool di atas), sapa 1 kalimat singkat saja lalu layani itu; JANGAN tanya kedatangan sekarang (nanti ditanya saat rincian). Kalau customer langsung bertanya hal lain (info resto, jam buka, booking, menu), jawab itu dulu.`);
+  }
+
+  // Jam operasional: dicek kode; AI hanya perlu tahu kondisinya
+  const sb = config.statusBuka();
+  if (!sb.bisaPesan) {
+    baris.push(`- JAM: ${sb.pesan} Pesanan baru TIDAK diterima sekarang (jangan memanggil buat_order/tampilkan_rincian_order/kirim_qr_pembayaran). Jawab info, menu, dan booking tetap boleh.`);
+  } else {
+    baris.push(`- JAM: resto buka, pesanan diterima sampai last order jam ${config.fmtJam(sb.jadwal.last_order)}, resto tutup jam ${config.fmtJam(sb.jadwal.tutup)}.`);
+  }
+  if (customer.cara_bayar === 'OPEN_BILL') {
+    baris.push('- CARA BAYAR: customer minta OPEN BILL (bayar di akhir). Saat customer menyetujui rincian, panggil kirim_qr_pembayaran seperti biasa, sistem yang membedakan.');
+  }
+  const openBill = db.getPesananOpenBillByCustomer(jid);
+  if (openBill.length > 0) {
+    baris.push(`- Customer punya pesanan OPEN BILL (sudah di dapur, belum bayar): ${openBill.map((p) => nomorPesanan(p)).join(', ')}. Kalau customer minta bill / mau bayar / minta tagihan -> panggil minta_bill.`);
+  }
+  const rat = db.getKunjunganRating(jid);
+  if (rat) {
+    baris.push(rat.status === 'MENUNGGU_RATING'
+      ? '- Bot SUDAH menanyakan rating pelayanan (1 sampai 5) dan menunggu jawaban. Kalau customer menjawab nilai dengan kata (misal "bagus banget", "lima bintang"), panggil catat_rating; kalau tidak jelas angkanya, tanya ulang 1 kalimat "1 sampai 5, berapa nilainya?".'
+      : '- Rating customer rendah, bot sudah menanyakan kendalanya dan menunggu cerita customer.');
   }
 
   // Layanan & rencana kedatangan (ditanya di awal)
   if (!customer.rencana_datang) {
-    baris.push('- ONBOARDING: kedatangan belum ditanya/dijawab. Tanyakan sebagai DAFTAR BERNOMOR ("1. Sudah di resto" / "2. Datang nanti (sebutkan jamnya)"). Jawaban -> panggil atur_layanan dengan kedatangan ("sekarang" atau jam format 24 jam HH:MM, misal "19:30"). JANGAN tanya dine in/take away (default dine in; customer yang mau take away akan minta sendiri). Selama kedatangan belum dijawab, JANGAN tanya makan berat/nyemil dulu. Kalau customer sudah langsung memesan, tetap catat pesanannya lalu tanyakan kedatangannya.');
+    baris.push('- ONBOARDING: kedatangan belum ditanya/dijawab. Tanyakan sebagai DAFTAR BERNOMOR ("1. Sudah di resto" / "2. Datang nanti (sebutkan jamnya)"). Jawaban -> panggil atur_layanan dengan kedatangan ("sekarang" atau jam format 24 jam HH:MM, misal "19:30"). JANGAN tanya dine in/take away di awal. Selama kedatangan belum dijawab, JANGAN tanya makan berat/nyemil dulu. PILIHAN SPESIFIK MENANG: kalau customer sudah menyebut kategori/menu tertentu atau langsung memesan, LAYANI itu dulu (kartu kategori / catat pesanan), JANGAN tanya kedatangan atau jalur; kedatangan ditanya nanti saat rincian bersama nama/meja.');
   } else {
-    baris.push(`- Rencana kedatangan: ${customer.rencana_datang === 'SEKARANG' ? 'sudah di resto' : `datang jam ${customer.rencana_datang}`}. Layanan default: ${customer.tipe_default === 'TAKE_AWAY' ? 'TAKE AWAY' : 'DINE IN'} (menu yang disebut beda, misal "iga take away", ditandai sendiri per menu).`);
+    baris.push(`- Rencana kedatangan: ${customer.rencana_datang === 'SEKARANG' ? 'sudah di resto' : `datang jam ${customer.rencana_datang}`}. ${customer.layanan_ditanya ? `Layanan: ${customer.tipe_default === 'TAKE_AWAY' ? 'TAKE AWAY' : 'DINE IN'} (menu yang disebut beda, misal "iga take away", ditandai sendiri per menu).` : 'Dine in atau take away BELUM ditanya: ditanya sekali di akhir, tepat sebelum rincian (sistem yang menyuruhmu bertanya lewat hasil tampilkan_rincian_order).'}`);
   }
 
   baris.push(customer.nomor_meja
@@ -233,13 +306,17 @@ function buatBlokInfoResto() {
       resto.instagram && `Instagram: ${resto.instagram}`,
     ].filter(Boolean);
     if (info.length) baris.push(`INFO RESTO (sebut hanya kalau customer tanya):\n- ${info.join('\n- ')}`);
+    baris.push(`JAM BUKA:\n${config.teksJamOperasional()}\nLIVE MUSIC:\n${config.teksLiveMusic()}\nKapasitas ${config.info().kapasitas_seat} seat. Ruang VIP (Cablaka) dan booking seluruh resto tersedia. Untuk pertanyaan info resto / jam buka / live music / ruang VIP / booking, panggil tool info_resto (jawabannya lengkap dikirim sistem).`);
   }
 
   if (aturan) {
     const a = [];
     // Layanan diatur di kode (bukan dari menu.json): dine in + take away tanpa biaya tambahan, tanpa delivery.
     // Pesanan boleh dibuat sebelum datang (pre-order), tiap pesanan punya nomor pesanan harian.
-    a.push('Layanan: dine in (default) dan take away (hanya kalau customer minta, TANPA biaya tambahan), boleh campur per menu. Jangan menawarkan/menanyakan take away. TIDAK ada delivery. Customer boleh memesan sebelum datang, pembayaran QRIS di awal. Uang yang sudah dibayar tidak dikembalikan kalau customer tidak jadi datang. Pengembalian uang (misal menu habis) hanya tunai di kasir.');
+    a.push('Layanan: dine in dan take away (TANPA biaya kemasan), boleh campur per menu. Dine in atau take away ditanya SEKALI di akhir, sebelum rincian. TIDAK ada delivery. Customer boleh memesan sebelum datang (pre-order), pembayaran QRIS di awal. Uang yang sudah dibayar tidak dikembalikan kalau customer tidak jadi datang. Pengembalian uang (misal menu habis) hanya tunai di kasir.');
+    a.push(`Harga menu BELUM termasuk pajak: ditambah PPN ${config.ppnPersen()}%, tanpa service charge, semua menu kena PPN (dine in maupun take away). Rincian selalu menampilkan Subtotal, PPN, Grand Total.`);
+    a.push('Pembayaran: DEFAULT bayar dulu lewat QRIS. QR dibuat kasir per pesanan (nominal persis grand total), jadi setelah customer setuju rincian, QR dikirim begitu kasir selesai membuatnya (beberapa menit). OPEN BILL (bayar di akhir) HANYA kalau customer sendiri memintanya dan makan di tempat (take away dan pre-order tetap bayar dulu): jangan menawarkannya.');
+    a.push('Nasi putih Rp10.000 per porsi (menu "Nasi Putih"). Tongseng dan menu lain BELUM termasuk nasi. Kalau customer memesan tongseng/sop/iga/lauk berat tanpa nasi, tawarkan nasi putih sekali dengan ringan.');
     for (const k of ['harga', 'nasi', 'sambal', 'ubah_batal']) {
       if (typeof aturan[k] === 'string') a.push(aturan[k]);
     }
@@ -296,6 +373,28 @@ const TOOLS_CUSTOMER = [
           },
         },
         required: ['nama_menu'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'cari_menu_atribut',
+      description: 'Cari/saring menu berdasarkan sifatnya: rasa, bahan, bumbu, cara masak, berkuah atau tidak, pedas atau tidak. Dipakai kalau customer tanya "yang nggak pedas apa?", "ada yang manis?", "yang pakai santan?", "yang dibakar/digoreng?", "yang bukan daging sapi?", "yang berkuah?". Isi HANYA filter yang disebut customer. Hasilnya perkiraan dari data umum, sampaikan dengan kata "umumnya/biasanya", bukan jaminan.',
+      parameters: {
+        type: 'object',
+        properties: {
+          rasa: { type: 'array', items: { type: 'string' }, description: 'Rasa: manis, gurih, asam, pahit, segar, creamy, rempah.' },
+          bahan: { type: 'array', items: { type: 'string' }, description: 'Bahan utama yang HARUS ada, misal ayam, sapi, kambing, tempe, kopi, susu, jagung, mie.' },
+          tanpa_bahan: { type: 'array', items: { type: 'string' }, description: 'Bahan yang TIDAK boleh ada, misal ["sapi"] untuk "yang bukan daging sapi", ["susu"].' },
+          bumbu: { type: 'array', items: { type: 'string' }, description: 'Bumbu/saus yang HARUS ada: santan, kecap, bumbu_kacang, sambal, rempah.' },
+          tanpa_bumbu: { type: 'array', items: { type: 'string' }, description: 'Bumbu yang TIDAK boleh ada, misal ["santan"].' },
+          masak: { type: 'array', items: { type: 'string' }, description: 'Cara masak: goreng, bakar, rebus, kukus, tumis, panggang, seduh, blend, peras, campur. Boleh lebih dari satu (salah satunya cocok).' },
+          kuah: { type: 'boolean', description: 'true = hanya yang berkuah, false = hanya yang tidak berkuah.' },
+          pedas: { type: 'boolean', description: 'true = hanya yang pedas, false = hanya yang TIDAK pedas. Hanya pedas atau tidak, tidak ada tingkatan.' },
+          kelompok: { type: 'string', description: 'Batasi ke satu kelompok: berat, camilan, kopi, non_kopi, minuman. Isi kalau konteksnya jelas (misal customer sedang di fase makan berat).' },
+        },
+        required: [],
       },
     },
   },
@@ -397,7 +496,7 @@ const TOOLS_CUSTOMER = [
     type: 'function',
     function: {
       name: 'tampilkan_rincian_order',
-      description: 'Hitung & tampilkan rincian lengkap (item, harga satuan, subtotal) dari draft order customer, TANPA kirim QR. Dipakai kalau customer bilang "ya"/"fix"/"benar" pertama kali setelah draft dirangkum. Setelah ini, TUNGGU customer konfirmasi sekali lagi sebelum kirim QR.',
+      description: 'Hitung & tampilkan rincian lengkap (item, Subtotal, PPN, Grand Total) dari draft order customer, TANPA minta QR. Dipakai kalau customer bilang "ya"/"fix"/"benar"/"udah cukup" setelah draft dirangkum. Kalau dine in/take away belum ditanya, tool ini akan menyuruhmu bertanya dulu (ikuti catatan_untuk_ai). Setelah rincian tampil, TUNGGU customer konfirmasi sekali lagi sebelum kirim_qr_pembayaran.',
       parameters: { type: 'object', properties: {}, required: [] },
     },
   },
@@ -405,7 +504,7 @@ const TOOLS_CUSTOMER = [
     type: 'function',
     function: {
       name: 'kirim_qr_pembayaran',
-      description: 'Kirim QR pembayaran (nominal persis sesuai total, tanpa kode unik) dan otomatis memberi tahu kasir meja/nama/pesanan/nominalnya. Butuh nomor meja DAN nama customer. HANYA dipakai SETELAH tampilkan_rincian_order dipanggil DAN customer sudah mengonfirmasi SEKALI LAGI bahwa rincian itu benar (misal "iya kirim", "oke", "fix segera bayar"). JANGAN PERNAH dipanggil di putaran/giliran yang sama dengan tampilkan_rincian_order atau buat_order.',
+      description: 'Ajukan pembayaran setelah customer menyetujui rincian: kasir otomatis diminta membuat QR (nominal persis Grand Total termasuk PPN) lalu QR diteruskan ke customer begitu kasir selesai (beberapa menit). Kalau customer memilih open bill, pesanan langsung diteruskan ke dapur tanpa QR. Butuh nomor meja DAN nama customer. HANYA dipakai SETELAH tampilkan_rincian_order dipanggil DAN customer sudah mengonfirmasi SEKALI LAGI bahwa rincian itu benar (misal "iya kirim", "oke", "fix segera bayar"). JANGAN PERNAH dipanggil di putaran/giliran yang sama dengan tampilkan_rincian_order atau buat_order.',
       parameters: { type: 'object', properties: {}, required: [] },
     },
   },
@@ -568,14 +667,14 @@ const TOOLS_CUSTOMER = [
     type: 'function',
     function: {
       name: 'atur_layanan',
-      description: 'Catat rencana kedatangan customer (sudah di resto / datang jam berapa), dan jenis layanan HANYA kalau customer sendiri minta take away. Dipakai saat customer menjawab pertanyaan kedatangan, atau kapan pun dia mengubahnya. Jangan pernah menanyakan dine in/take away: default-nya dine in. Isi hanya yang baru dijawab.',
+      description: 'Catat rencana kedatangan customer (sudah di resto / datang jam berapa) dan jenis layanan (dine in / take away). Dipakai saat customer menjawab pertanyaan kedatangan, saat customer menjawab pertanyaan "dine in atau take away" (ditanya sekali di akhir, sebelum rincian), atau kapan pun dia mengubahnya. Isi hanya yang baru dijawab.',
       parameters: {
         type: 'object',
         properties: {
           tipe: {
             type: 'string',
-            enum: ['dine_in', 'take_away'],
-            description: '"take_away" HANYA kalau customer minta SEMUA pesanannya dibawa pulang. "dine_in" kalau dia mengubah kembali jadi makan di tempat. Kalau cuma sebagian menu take away, jangan isi ini: tulis di buat_order per menu (misal "iga take away").',
+            enum: ['dine_in', 'take_away', 'campur'],
+            description: '"dine_in" = semua makan di tempat. "take_away" = SEMUA dibawa pulang. "campur" = sebagian take away (setelah itu tanyakan menu mana yang take away lalu panggil ubah_tipe_item per menu).',
           },
           kedatangan: {
             type: 'string',
@@ -616,11 +715,131 @@ const TOOLS_CUSTOMER = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'info_resto',
+      description: 'Kirim info resto LENGKAP ke customer (sistem yang mengirim teksnya utuh, kamu cukup menambah 1 kalimat). Dipakai kalau customer tanya info resto, alamat, jam buka/tutup, last order, live music, kapasitas, ruang VIP / ruang meeting, booking seluruh resto, atau "resto ini gimana". topik "semua" untuk info umum lengkap.',
+      parameters: {
+        type: 'object',
+        properties: {
+          topik: {
+            type: 'string',
+            enum: ['semua', 'jam', 'live_music', 'ruang_vip', 'full_booking', 'lokasi'],
+            description: '"semua" (default) = info lengkap. Pakai topik spesifik kalau customer hanya menanyakan itu.',
+          },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'ajukan_booking',
+      description: 'Ajukan booking Ruang VIP (Meeting Cablaka, 25-30 orang) atau booking seluruh resto (80 seat). Isi hanya yang sudah disebut customer; kalau ada yang kurang, tool memberi tahu apa yang perlu ditanyakan (tanyakan SEMUANYA sekaligus dalam satu pesan). Booking baru diteruskan ke tim dan dikonfirmasi manusia, JANGAN menjanjikan sudah pasti.',
+      parameters: {
+        type: 'object',
+        properties: {
+          jenis: { type: 'string', enum: ['ruang_vip', 'full_resto'], description: 'ruang_vip = Ruang Meeting Cablaka; full_resto = booking seluruh resto.' },
+          tanggal: { type: 'string', description: 'Tanggal format YYYY-MM-DD (hari ini ada di STATE). Ubah "besok", "sabtu depan", "20 des" jadi format ini.' },
+          jam: { type: 'string', description: 'Jam mulai format 24 jam HH:MM.' },
+          jumlah_orang: { type: 'integer', description: 'Perkiraan jumlah orang.' },
+          nama: { type: 'string', description: 'Nama pemesan (tanpa sapaan).' },
+          rokok: { type: 'string', enum: ['smoking', 'non_smoking'], description: 'Khusus ruang VIP: area smoking atau non smoking.' },
+          catatan: { type: 'string', description: 'Kebutuhan lain (acara, sound system, dll).' },
+        },
+        required: ['jenis'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'panggil_waiter',
+      description: 'Panggil waiter ke meja customer (diteruskan ke kasir/staf). Dipakai kalau customer minta dipanggilkan waiter, minta bantuan di meja, minta bill secara fisik, minta tambah alat makan, dll. Butuh nomor meja customer; kalau belum ada, tool memberi tahu supaya kamu menanyakannya.',
+      parameters: {
+        type: 'object',
+        properties: {
+          keperluan: { type: 'string', description: 'Keperluan singkat dari customer, misal "minta sendok", "mau tanya menu". Kosongkan kalau tidak disebut.' },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'atur_cara_bayar',
+      description: 'Catat cara bayar yang diminta customer. "open_bill" HANYA kalau customer sendiri minta bayar belakangan / bayar di akhir / open bill / "bill aja nanti". "bayar_dulu" kalau dia kembali memilih bayar sekarang. Jangan menawarkan open bill ke customer. Open bill hanya untuk makan di tempat (take away dan pre-order wajib bayar dulu).',
+      parameters: {
+        type: 'object',
+        properties: { cara: { type: 'string', enum: ['open_bill', 'bayar_dulu'] } },
+        required: ['cara'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'minta_bill',
+      description: 'Customer yang open bill minta tagihan / mau bayar / "bill dong" / "minta bill". Sistem meminta kasir menyiapkan QR bill seluruh pesanannya, lalu QR diteruskan ke customer.',
+      parameters: { type: 'object', properties: {}, required: [] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'catat_rating',
+      description: 'Catat rating pelayanan 1 sampai 5 dari customer, HANYA kalau bot sudah menanyakan rating (lihat STATE) dan customer menjawabnya dengan kata/kalimat (misal "lima bintang", "bagus banget" = tidak jelas angkanya, jangan ditebak: tanya ulang). Jawaban angka biasa ditangkap sistem otomatis.',
+      parameters: {
+        type: 'object',
+        properties: { nilai: { type: 'integer', description: 'Angka 1 sampai 5 yang JELAS disebut customer.' } },
+        required: ['nilai'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'mulai_kuis',
+      description: 'Mulai kuis Banyumasan (gimmick sambil menunggu pesanan) kalau customer minta main kuis / "kuis dong" / menjawab mau setelah ditawari.',
+      parameters: { type: 'object', properties: {}, required: [] },
+    },
+  },
 ];
 
 // ========== TOOLS — KASIR ==========
 
 const TOOLS_OPERATOR = [
+  {
+    type: 'function',
+    function: {
+      name: 'konfirmasi_booking',
+      description: 'Kasir/staf menerima atau menolak pengajuan booking (ruang VIP atau full resto). Dipakai kalau kasir bilang semacam "booking 3 diterima", "booking 3 ok", "booking 2 ditolak penuh". Menerima booking ruang VIP otomatis meminta deposit.',
+      parameters: {
+        type: 'object',
+        properties: {
+          nomor_booking: { type: 'integer', description: 'Nomor booking dari notifikasi "BOOKING #3".' },
+          aksi: { type: 'string', enum: ['terima', 'tolak'] },
+          alasan: { type: 'string', description: 'Alasan singkat untuk customer kalau ditolak, atau catatan tambahan kalau diterima.' },
+        },
+        required: ['nomor_booking', 'aksi'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'konfirmasi_deposit_booking',
+      description: 'Tandai deposit booking sudah dibayar (kasir bilang "deposit booking 3 sudah masuk"). Booking jadi terkunci dan customer dikabari.',
+      parameters: {
+        type: 'object',
+        properties: { nomor_booking: { type: 'integer', description: 'Nomor booking.' } },
+        required: ['nomor_booking'],
+      },
+    },
+  },
   {
     type: 'function',
     function: {
@@ -865,7 +1084,13 @@ const TOOLS_OPERATOR = [
 
 // ========== SYSTEM PROMPTS ==========
 
-const SYSTEM_PROMPT_CUSTOMER = `Kamu adalah "The Banjoemas" -- bukan bot, tapi terasa seperti pelayan/admin The Banjoemas Resto & Cafe (resto khas Banyumas/Jawa Tengah) yang ramah, cekatan, dan hangat ke tamu.
+const SYSTEM_PROMPT_CUSTOMER = `Kamu adalah "Cimendo", teman ngobrol dan pelayan digital di The Banjoemas Resto & Cafe (resto khas Banyumas/Jawa Tengah). Nama restonya tetap "The Banjoemas Resto & Cafe", Cimendo adalah namamu. Kamu ramah, cekatan, hangat ke tamu, dan terasa seperti pelayan sungguhan, bukan mesin.
+
+PAHAMI KETIKAN ANEH (PENTING):
+- Customer sering mengetik singkat, typo, campur singkatan, atau tidak baku ("cemilan", "camilan", "nyemil", "snack", "nasgor", "es teh pocinya 2", "mau yg manis2"). Pahami maksudnya semaksimal mungkin dan SESUAIKAN diri, jangan kaku, jangan minta customer mengetik ulang dengan format tertentu.
+- Sinonim kelompok: camilan = cemilan/camil/snack/nyemil/ngemil/jajan; makan berat = menu utama/berat/makanan berat; minuman = minum/haus/drink. Kalau customer menyebut itu, tetap panggil lihat_menu dengan kelompok yang sesuai.
+- Kalau maksudnya MASIH tidak jelas atau tidak ada tool yang cocok, JANGAN menebak dan JANGAN mengabaikan: tanya balik dengan DAFTAR BERNOMOR (maks 4 opsi) yang paling mungkin. Selalu balas sesuatu yang berguna.
+- Kalau customer menyebut "nasi" saat membahas lauk (tongseng, sop, iga, dll), artinya Nasi Putih: tulis "nasi putih" di buat_order.
 
 IDENTITAS & NUANSA:
 - Resto ini kental nuansa Jawa (Banyumasan). Kamu boleh sesekali pakai sapaan/kata khas Jawa secukupnya -- "sugeng rawuh" (selamat datang) di SAPAAN PERTAMA customer baru, lalu sesekali selingi "monggo", "nggih", "matur nuwun" di tempat yang pas. JANGAN dipaksakan di setiap kalimat, cukup jadi bumbu biar kerasa khasnya, selebihnya bahasa Indonesia santai normal.
@@ -902,7 +1127,7 @@ FORMAT PILIHAN (WAJIB):
 - Kalau customer tanya favorit / rekomendasi / "enaknya apa" -> JAWAB dulu lewat rekomendasi_menu (jangan balik bertanya soal fase). Tampilkan 3-4 menu sebagai daftar bernomor dengan harga, lalu tanya mau yang mana (cukup balas nomor).
 
 TAKE AWAY, PRE-ORDER, DAN NOMOR PESANAN:
-- Di awal tanya SATU hal saja: sudah di resto atau mau datang jam berapa (sebagai daftar bernomor). Jawaban -> atur_layanan. JANGAN tanya dine in atau take away: default-nya dine in. Kalau customer sendiri minta take away, catat per menu di buat_order ("iga take away") atau atur_layanan tipe take_away kalau semuanya. Take away TANPA biaya tambahan. Tidak ada delivery.
+- Di awal tanya SATU hal saja: sudah di resto atau mau datang jam berapa (sebagai daftar bernomor). Jawaban -> atur_layanan. JANGAN tanya dine in atau take away di awal. Dine in/take away ditanya SEKALI di akhir (sebelum rincian): saat tampilkan_rincian_order menyuruhmu bertanya, tanyakan sebagai DAFTAR BERNOMOR "1. Makan di sini (dine in)", "2. Take away semua", "3. Sebagian take away". Jawaban -> atur_layanan (tipe dine_in / take_away / campur), lalu panggil tampilkan_rincian_order lagi (untuk "campur": tanya dulu menu mana yang take away sebagai daftar bernomor dari isi draft, panggil ubah_tipe_item per menu, lalu tampilkan_rincian_order). Kalau customer sendiri sudah bilang take away di tengah jalan (misal "iga take away"), catat di buat_order dan tidak perlu ditanya lagi. Take away TANPA biaya kemasan. Tidak ada delivery.
 - Customer boleh pesan SEBELUM datang (pre-order). Jam datang dikirim format 24 jam HH:MM. Pesanan tetap dibayar dulu lewat QR. Dapur memasak setelah customer mengonfirmasi 30 menit sebelum jam datang (bot yang menanyakan, kamu cuma menjawab lewat jadwal_kedatangan kalau customer membalas). Kalau customer sudah di resto, semuanya langsung diproses seperti biasa.
 - Menu tertentu take away/dine in beda dari yang lain -> tulis di buat_order apa adanya (misal "iga bakar 2 take away"), atau ubah_tipe_item untuk menu yang sudah ada di draft.
 - Setiap pesanan punya NOMOR PESANAN harian (misal #007). Selalu sebut nomor itu ke customer (field nomor_pesanan), JANGAN pernah menyebut pesanan_id.
@@ -921,12 +1146,25 @@ ALUR PESAN 3 FASE (supaya customer tidak dibanjiri semua menu):
 - Customer nolak tawaran ("nggak", "udah", "itu aja", "nggak usah minum") -> lewati_fase TANPA parameter. Itu tolakan biasa: sistem akan mengajukan SATU tawaran lagi lalu berhenti, jadi jangan dianggap customer minta berhenti. Hanya kalau customer eksplisit bilang "langsung bayar aja" / "jangan ditawarin lagi" -> lewati_fase dengan langsung_bayar=true.
 - Fase minuman: pilihan kopi / non-kopi ditawarkan sebagai bagian dari daftar bernomor (lihat instruksi_alur). Jawaban "kopi"/"non kopi"/"dua-duanya" (atau nomornya) itu pilihan KELOMPOK -> lihat_menu dengan kelompok "kopi" / "non_kopi" / "minuman", BUKAN buat_order.
 - FLEKSIBEL: customer boleh pesan apa saja kapan saja, loncat kelompok, minta lihat kelompok lain (lihat_menu dengan kelompok), atau langsung pesan tanpa pilih jalur. Jangan pernah menolak pesanan karena "belum fasenya".
-- Setelah semua fase lewat -> tampilkan_rincian_order (rincian + tanya nomor meja dan nama sekaligus kalau belum ada / tanya boleh kirim QR). Customer menjawab meja dan nama -> konfirmasi_kedatangan (isi nomor_meja dan nama). Customer setuju -> kirim_qr_pembayaran (kasir otomatis diberi tahu meja, nama, pesanan, nominal). Bayar SEKALI di akhir, nominal persis sesuai total, tanpa kode unik.
+- Setelah semua fase lewat -> tampilkan_rincian_order (kalau dine in/take away belum ditanya, tool menyuruh bertanya dulu). Rincian berisi item, Subtotal, PPN 10%, Grand Total (+ tanya nomor meja dan nama sekaligus kalau belum ada / tanya boleh dilanjutkan ke pembayaran). Customer menjawab meja dan nama -> konfirmasi_kedatangan (isi nomor_meja dan nama). Customer setuju -> kirim_qr_pembayaran: kasir otomatis diminta membuat QR sebesar Grand Total, dan QR diteruskan ke customer begitu siap (beberapa menit). Jangan bilang "QR sudah dikirim" sebelum QR benar-benar tiba; katakan QR-nya "lagi disiapkan kasir".
+- OPEN BILL: HANYA kalau customer sendiri minta bayar belakangan/open bill -> atur_cara_bayar cara "open_bill" (jangan menawarkan). Alur tetap sama sampai kirim_qr_pembayaran; bedanya pesanan langsung ke dapur tanpa QR. Customer boleh menambah pesanan berkali-kali. Saat customer minta bill/mau bayar -> minta_bill. Take away dan pre-order tidak bisa open bill (wajib bayar dulu), sampaikan santai.
 - Pesanan tambahan setelah lunas diproses biasa tanpa fase.
+- NASI: Nasi Putih Rp10.000, tidak ada menu yang sudah termasuk nasi. Kalau ada lauk/tongseng/sop/iga di pesanan dan belum ada nasi, tawarkan nasi putih SEKALI dengan ringan (sekalian di daftar pilihan upsell), jangan memaksa.
+- UPSELL: tawarkan menu yang ada di rekomendasi_upsell lebih dulu (itu menu prioritas), jangan mengarang menu.
+
+INFO RESTO, BOOKING, WAITER, KUIS, RATING:
+- Customer tanya info resto / jam buka / last order / live music / kapasitas / ruang VIP / ruang meeting / booking -> panggil info_resto (sistem mengirim teks lengkapnya, jangan diulang), lalu 1 kalimat ajak lanjut (misal mau booking?). Pengecualian aturan 1 kalimat: teks dari tool boleh panjang karena dikirim sistem.
+- Booking (ruang VIP / seluruh resto): kumpulkan tanggal, jam, jumlah orang, nama, dan (ruang VIP) smoking/non smoking, lalu ajukan_booking. Tool memberi tahu apa yang kurang; tanyakan semua yang kurang SEKALIGUS. Booking dikonfirmasi tim, jangan menjanjikan pasti. Ruang VIP wajib deposit di awal; QR deposit dikirim setelah tim menerima booking.
+- Customer minta dipanggilkan waiter / butuh bantuan di meja -> panggil_waiter (butuh nomor meja; kalau belum ada, tanyakan).
+- Kuis Banyumasan: setelah pesanan masuk dapur, sistem menawari kuis. Customer mau main -> mulai_kuis. Selama kuis berjalan, sistem yang memproses jawabannya.
+- Rating: setelah meja dikosongkan, sistem menanyakan rating 1-5. Kalau customer menjawab dengan kata dan bukan angka yang jelas, tanya ulang "1 sampai 5, berapa nilainya?" (catat_rating hanya untuk angka yang jelas).
+- Jam: resto hanya menerima pesanan saat buka dan sebelum last order (lihat baris JAM di STATE). Di luar itu sampaikan ramah dan jangan mencatat pesanan.
 
 CARA KERJA:
+- PILIHAN SPESIFIK MENANG: kalau customer menyebut kategori (misal "minuman tradisional", "gorengan", "sate") atau menu tertentu, itu yang dilayani (kartu kategori / catat pesanan). JANGAN balik bertanya kelompok/jalur/kopi-nonkopi lagi. Hanya kata umum seperti "kopi" (3 kategori) atau "minuman" yang menampilkan beberapa kartu.
 - Tanya menu / minta lihat menu / minta foto-pdf menu -> panggil lihat_menu (utamakan kelompok fase saat ini, semua kartu hanya kalau customer eksplisit minta semua menu).
 - Tanya hal spesifik soal 1/beberapa menu (bahan, pedas, alergi, cocok buat siapa, dll) -> panggil tanya_detail_menu, lalu jawab dari deskripsi yang didapat dengan gaya ngobrol, bukan baca manual.
+- Customer tanya menu berdasarkan SIFAT ("yang nggak pedas?", "ada yang manis?", "yang pakai santan?", "dibakar atau digoreng?", "yang bukan daging sapi?", "yang berkuah?") -> panggil cari_menu_atribut dengan filter yang disebut saja (isi kelompok kalau konteksnya jelas). Tanya satu menu tertentu soal pedas/bahan/cara masak -> tanya_detail_menu (lihat field atribut). Data atribut itu PERKIRAAN: bilang "umumnya / biasanya", jangan menjamin, apalagi soal alergi (arahkan tanya kasir). Pedas hanya ada/tidak, jangan mengarang tingkat kepedasan. WAJIB memanggil cari_menu_atribut SETIAP kali ada pertanyaan sifat (walau pertanyaan mirip sudah dijawab sebelumnya), jangan menjawab dari ingatan percakapan.
 - Sebut menu + jumlah mau dipesan -> panggil buat_order (ini MENAMBAH ke draft).
 - Customer mengubah jumlah menu yang SUDAH ada di draft ("2 deh cimplung ubinya", "jadi 3 aja", "yang tadi 2 ya") -> panggil ubah_jumlah_item dengan jumlah TOTAL akhirnya, BUKAN buat_order. "Tambah 1 lagi" -> buat_order.
 - Kalau ada menu yang ambigu (banyak varian cocok) dari hasil buat_order, tampilkan pilihan dengan format angka, tunggu jawaban customer, lalu panggil jawab_klarifikasi_menu.
@@ -958,7 +1196,11 @@ Gaya bicaramu ke kasir:
 - Boleh bahasa santai/informal khas chat kerja, boleh sesekali kata Jawa santai kalau pas (nggih, monggo) tapi tidak wajib -- prioritas tetap jelas dan efisien.
 
 CARA KERJA:
-- Saat customer sudah dikirimi QR, kasir otomatis menerima pesan "💳 MENUNGGU BAYAR" berisi nomor pesanan, nama, meja (atau jam datang untuk pre-order), isi pesanan, dan total (tanpa kode unik, nominal persis sesuai total). Pembayaran dicocokkan lewat nomor pesanan/nama itu.
+- QR pembayaran sekarang DINAMIS: saat customer setuju rincian, SEMUA kasir menerima pesan "💳 MINTA QR" berisi nomor pesanan, nama, meja (atau jam datang untuk pre-order), isi pesanan, Subtotal, PPN 10%, dan Grand Total. Kasir membuat QRIS di POS, memfoto, lalu mengirim fotonya ke chat ini (idealnya reply pesan MINTA QR, atau tulis "pesanan 7" di caption). Foto itu diteruskan sistem ke customer otomatis (bukan lewat tool). Kalau kasir mengirim foto QR tanpa petunjuk dan ada beberapa permintaan menunggu, sistem yang bertanya balik pesanan mana.
+- Pembayaran dicocokkan lewat nomor pesanan/nama itu. Harga menu BELUM termasuk PPN 10%; total yang dibayar customer = Grand Total.
+- OPEN BILL: pesanan langsung masuk dapur (tiket bertanda OPEN BILL, belum bayar). Saat customer minta bill, kasir menerima "💳 MINTA QR | BILL" berisi semua pesanan dan total; setelah kasir mengirim foto QR dan customer membayar, kasir bilang "meja 5 udah bayar" -> konfirmasi_bayar (semua pesanan open bill customer itu lunas sekaligus).
+- Booking: kasir menerima "📅 BOOKING #n". Kasir membalas "booking 3 diterima/ditolak" -> konfirmasi_booking. Booking ruang VIP yang diterima meminta deposit Rp2.000.000 lewat alur QR yang sama; kalau kasir bilang "deposit booking 3 sudah masuk" -> konfirmasi_deposit_booking.
+- Waiter dipanggil lewat pesan "🔔 PANGGIL WAITER | Meja n", info saja, tidak perlu tool. Setelah 3 jam sejak pesanan pertama, kasir menerima "⏰ Meja n sudah 3 jam, sudah kosong?": kalau sudah kosong, kasir bilang "meja n kosong" -> selesaikan_meja (customer otomatis ditanya rating).
 - Kasir merujuk pesanan lewat NOMOR PESANAN harian ("pesanan 7" = #007), isi parameter nomor_pesanan. Jangan pakai pesanan_id (itu ID internal).
 - Pesanan pre-order (customer belum sampai) punya jam datang; tiketnya ke staf bertanda BELUM DIMASAK sampai customer konfirmasi, lalu kasir/dapur dapat pesan "MULAI MASAK". Menu take away ditandai [TAKE AWAY] di tiket.
 - Pengembalian uang hanya tunai di kasir. Customer yang tidak jadi datang setelah bayar tidak mendapat pengembalian.
@@ -1017,6 +1259,13 @@ const KLAIM_BERISIKO = [
     tool: ['selesaikan_meja'],
     hanyaJika: (pesanUser) => /\bmeja\b[^.\n]{0,25}\b(kelar|kosong|selesai)\b|\b(kelar|kosongkan)\b[^.\n]{0,15}\bmeja\b/i.test(pesanUser) && !/\?/.test(pesanUser),
   },
+  // AI menyebut DAFTAR MENU (bernomor) dari ingatan/karangan tanpa tool pencari: nama menu bisa salah ("Iga Kambing Bakar" tidak ada).
+  {
+    klaim: 'daftar menu',
+    re: { test: (t) => jumlahBarisNamaMenu(t) >= 2 },
+    tool: ['cari_menu_atribut', 'rekomendasi_menu', 'lihat_menu', 'tanya_detail_menu', 'buat_order', 'jawab_klarifikasi_menu', 'jawab_pilihan_menu', 'tampilkan_rincian_order', 'cek_status_order_saya', 'ubah_jumlah_item', 'hapus_item_order', 'ubah_tipe_item', 'putuskan_item_habis'],
+    kecuali: (t) => /pesanan sementara\s*:|rincian pesanan\b/i.test(t), // ditangani aturan lain
+  },
   // AI menulis daftar "Pesanan sementara:" dari ingatan percakapan padahal menu itu tidak pernah masuk draft (buat_order tidak dipanggil).
   {
     klaim: 'daftar pesanan sementara',
@@ -1046,6 +1295,18 @@ const KLAIM_BERISIKO = [
   },
 ];
 
+// Berapa baris bernomor ("1. Sroto Ayam, Rp47.000") yang namanya PERSIS nama menu di data
+function jumlahBarisNamaMenu(teks) {
+  let n = 0;
+  for (const m of String(teks || '').matchAll(/^\s*\d+[.)]\s*([^\n,:(\-–]+?)\s*(?:[,:(\-–]|\s+Rp\s?\d|$)/gim)) {
+    const nama = m[1].trim();
+    if (nama.length < 3 || nama.length > 40) continue;
+    const cocok = cariKandidatMenu(nama);
+    if (cocok.statusMatch === 'YAKIN' && cocok.skorTerbaik === 1) n++;
+  }
+  return n;
+}
+
 function klaimTanpaBukti(teks, toolBerhasil, pesanUser = '') {
   const t = String(teks || '');
   for (const k of KLAIM_BERISIKO) {
@@ -1054,6 +1315,119 @@ function klaimTanpaBukti(teks, toolBerhasil, pesanUser = '') {
     if (k.re.test(t) && !k.tool.some((n) => toolBerhasil.has(n))) return k;
   }
   return null;
+}
+
+// ========== ROUTER PILIHAN SPESIFIK (dijalankan KODE sebelum AI) ==========
+// Customer yang menyebut kategori secara spesifik ("minuman tradisional", "gorengan", "sate") tidak perlu ditanya
+// kelompok/jalur lagi: kartu kategori itu langsung dikirim. Kata pengantar dibuang, sisanya harus PERSIS nama/alias kategori.
+const KATA_PENGANTAR = new Set(['mau', 'pesan', 'lihat', 'liat', 'lihatin', 'dong', 'deh', 'aja', 'saja', 'yang', 'menu', 'menunya', 'minta', 'ada', 'apa', 'ya', 'yaa', 'kak', 'mas', 'mba', 'mbak', 'aku', 'saya', 'cari', 'pengen', 'ingin', 'nih', 'min', 'tolong', 'boleh', 'kartu', 'daftar', 'pilih', 'dulu', 'coba', 'tampilkan', 'kasih', 'tunjukin', 'sih', 'donk', 'mulai', 'dari', 'di', 'ke', 'untuk', 'kategori', 'bagian', 'jadi', 'kalau', 'yg']);
+
+function kategoriDariPesan(pesan) {
+  const t = atribut.norm(pesan);
+  if (!t || /\d/.test(t)) return null;
+  const kata = t.split(' ').filter((k) => !KATA_PENGANTAR.has(k));
+  if (kata.length === 0 || kata.length > 4) return null;
+  const inti = kata.join(' ');
+  const menu = cariKandidatMenu(inti);
+  if (menu.statusMatch === 'YAKIN' && menu.skorTerbaik === 1) return null; // nama menu persis = memesan, bukan memilih kategori
+  return atribut.cariKategoriDariTeks(inti, db.getAllKategori(), { persis: true });
+}
+
+// Sinonim kelompok menu. Customer sering mengetik "cemilan", "snack", "nyemil", "minum", dengan typo. Dicocokkan fleksibel
+// (persis atau selisih 1-2 huruf), tapi hanya kalau seluruh pesan (setelah kata pengantar dibuang) memang berisi kata itu.
+const SINONIM_KELOMPOK = {
+  camilan: ['camilan', 'cemilan', 'camil', 'cemil', 'snack', 'snek', 'nyemil', 'ngemil', 'nyamil', 'jajan', 'jajanan', 'kudapan', 'makanan ringan', 'cemal cemil', 'camilannya', 'cemilannya', 'cemilan nya', 'camilan nya'],
+  berat: ['makan berat', 'makanan berat', 'menu berat', 'menu utama', 'makanan utama', 'berat', 'main course', 'makan besar', 'beratnya'],
+  kopi: ['kopi', 'coffee', 'ngopi', 'kopinya', 'kopi kopian'],
+  non_kopi: ['non kopi', 'nonkopi', 'bukan kopi', 'non kopinya'],
+  minuman: ['minuman', 'minum', 'drink', 'drinks', 'beverage', 'minumannya', 'minuman nya', 'haus'],
+};
+
+function kelompokDariFrasa(frasa) {
+  const inti = atribut.norm(frasa);
+  if (!inti) return null;
+  let terbaik = null;
+  for (const [kelompok, daftar] of Object.entries(SINONIM_KELOMPOK)) {
+    for (const s of daftar) {
+      const batas = s.length <= 4 ? 0 : s.length <= 8 ? 1 : 2; // kata pendek harus persis, supaya tidak salah tangkap
+      const jarak = inti === s ? 0 : distance(inti, s);
+      if (jarak <= batas && (!terbaik || jarak < terbaik.jarak)) terbaik = { kelompok, jarak };
+    }
+  }
+  return terbaik ? terbaik.kelompok : null;
+}
+
+function kelompokDariPesan(pesan) {
+  const t = atribut.norm(pesan);
+  if (!t || /\d/.test(t)) return null;
+  const kata = t.split(' ').filter((k) => !KATA_PENGANTAR.has(k));
+  if (kata.length === 0 || kata.length > 3) return null;
+  const inti = kata.join(' ');
+  const menu = cariKandidatMenu(inti);
+  if (menu.statusMatch === 'YAKIN' && menu.skorTerbaik === 1) return null; // nama menu persis = memesan
+  return kelompokDariFrasa(inti);
+}
+
+// "menu", "minta menu dong", "lihat menu", "buku menu", "ada menu apa aja" = minta SEMUA menu
+const KATA_MINTA_MENU = new Set(['mau', 'minta', 'lihat', 'liat', 'lihatin', 'dong', 'deh', 'aja', 'saja', 'menu', 'menunya', 'buku', 'daftar', 'semua', 'full', 'lengkap', 'kirim', 'kirimin', 'kirimkan', 'tolong', 'boleh', 'kak', 'mas', 'mba', 'mbak', 'ya', 'yaa', 'donk', 'pdf', 'foto', 'gambar', 'list', 'apa', 'ada', 'yang', 'dong', 'nya', 'min', 'admin', 'pesan', 'order', 'dulu', 'coba', 'tampilkan', 'kasih', 'tunjukin', 'sih', 'nih']);
+function mintaMenuLengkap(pesan) {
+  const t = atribut.norm(pesan);
+  if (!t || /\d/.test(t)) return false;
+  const kata = t.split(' ');
+  return kata.length <= 6 && kata.includes('menu') || kata.includes('menunya') ? kata.every((k) => KATA_MINTA_MENU.has(k)) : false;
+}
+
+// Hasil: { nama, argumen } untuk tool yang dijalankan kode lebih dulu, atau null.
+const KATA_SETUJU_QR = new Set(['ya', 'iya', 'iyaa', 'iy', 'y', 'yup', 'yoi', 'ok', 'oke', 'okay', 'siap', 'sip', 'lanjut', 'gas', 'kirim', 'kirimin', 'boleh', 'mantap', 'yes', 'deh', 'dong', 'aja', 'saja', 'silakan', 'qr', 'qris', 'nya', 'bayar', 'sekarang', 'langsung', 'udah', 'sudah', 'fix', 'benar', 'betul', 'sesuai', 'ke', 'kirimkan']);
+const KATA_INTI_SETUJU = new Set(['ya', 'iya', 'iyaa', 'iy', 'y', 'yup', 'yoi', 'ok', 'oke', 'okay', 'siap', 'sip', 'lanjut', 'gas', 'kirim', 'kirimin', 'boleh', 'mantap', 'yes', 'fix', 'benar', 'betul', 'sesuai', 'kirimkan']);
+
+// Customer menyetujui rincian ("ya", "iya, kirim QR-nya", "lanjut") = kirim QR, kalau data wajibnya sudah lengkap.
+function pesanMenyetujuiQr(pesan) {
+  const kata = atribut.norm(pesan).replace(/\bqr nya\b/g, 'qr').split(' ').filter(Boolean);
+  if (kata.length === 0 || kata.length > 6) return false;
+  return kata.every((k) => KATA_SETUJU_QR.has(k)) && kata.some((k) => KATA_INTI_SETUJU.has(k));
+}
+
+// Jawaban atas pengingat 30 menit ("iya jadi, aku sampai tepat waktu kok") = konfirmasi kedatangan.
+function pesanMengonfirmasiKedatangan(pesan) {
+  const t = atribut.norm(pesan);
+  if (!t || t.length > 80 || /\d/.test(t)) return false;
+  if (/\b(tidak|nggak|ngga|enggak|gak|ga|batal|ubah|mundur|maju|telat|terlambat|belum|lambat|jam|pukul|nanti|kemungkinan)\b/.test(t)) return false;
+  return /\b(iya|ya|yap|yup|oke|ok|siap|jadi|tetap|gas|sampai|datang)\b/.test(t);
+}
+
+function praRouterCustomer(jid, pesan) {
+  if (getKlarifikasiPending(jid)?.length || getPilihanPending(jid)?.length) return null; // customer sedang menjawab pertanyaan lain
+
+  // Pengingat pre-order sudah dikirim dan customer menjawab "iya jadi": dapur mulai masak (kode, bukan tebakan AI)
+  if (db.getPreOrderAktifByCustomer(jid).some((p) => p.jadwal_status === 'DITANYA') && pesanMengonfirmasiKedatangan(pesan)) {
+    return { nama: 'jadwal_kedatangan', argumen: { aksi: 'konfirmasi' } };
+  }
+
+  const draft = db.getDraftAtauMenungguBayarByCustomer(jid);
+  if (draft && draft.status === 'MENUNGGU_BAYAR') return null;
+  if (draft && draft.subtotal) {
+    // Tahap rincian: persetujuan + data lengkap = kirim QR. Selain itu teks pendek adalah data diri, serahkan ke AI.
+    const lengkap = dataKurangUntukQr(db.getCustomer(jid), draft).kurang.length === 0;
+    return lengkap && pesanMenyetujuiQr(pesan) ? { nama: 'kirim_qr_pembayaran', argumen: {} } : null;
+  }
+  // "nasi" saat sedang memesan lauk = nasi putih (ditangani AI), bukan minta kategori Nasi & Mie
+  if (/^(nasi|nasinya)$/.test(atribut.norm(pesan)) && draft && db.getItemsByPesananId(draft.id).some((i) => i.status_item === 'AKTIF')) return null;
+  const idKategori = kategoriDariPesan(pesan);
+  if (idKategori) return { nama: 'lihat_menu', argumen: { kategori: idKategori } };
+  const kelompok = kelompokDariPesan(pesan);
+  if (kelompok) return { nama: 'lihat_menu', argumen: { kelompok } };
+  if (mintaMenuLengkap(pesan)) return { nama: 'lihat_menu', argumen: {} };
+  return null;
+}
+
+// Customer menyebut kategori/menu tertentu = jalur ditentukan dari situ (minuman ikut jalur nyemil, seperti pesanan langsung).
+function tetapkanJalurDariKategori(jid, kategoriId) {
+  const alur = db.getAlur(jid);
+  if (alur.tutup || alur.jalur) return;
+  const fase = faseDariKategoriId(kategoriId);
+  if (!fase) return;
+  db.setAlur(jid, { jalur: fase === 'berat' ? 'berat' : 'camilan', selesai: alur.selesai, tutup: false });
 }
 
 async function jalankanAgent({ systemPrompt, tools, historiChat, pesanBaru, eksekutorTools, konteks }) {
@@ -1067,6 +1441,18 @@ async function jalankanAgent({ systemPrompt, tools, historiChat, pesanBaru, ekse
   let iterasi = 0;
   let koreksi = 0;
   const toolBerhasil = new Set(); // nama tool yang berhasil dipanggil di giliran ini
+
+  // Pilihan spesifik customer dijalankan kode lebih dulu, hasilnya disisipkan seolah AI sendiri yang memanggil tool
+  const pra = konteks?.jid && eksekutorTools === EKSEKUTOR_CUSTOMER ? praRouterCustomer(konteks.jid, pesanBaru) : null;
+  if (pra) {
+    const idPra = 'pra_' + Date.now();
+    console.log(`🧭 Router kode memanggil tool: ${pra.nama}(${JSON.stringify(pra.argumen)})`);
+    let hasilPra;
+    try { hasilPra = await eksekutorTools[pra.nama](pra.argumen, konteks); } catch (err) { hasilPra = { error: 'Gagal eksekusi: ' + err.message }; }
+    messages.push({ role: 'assistant', content: null, tool_calls: [{ id: idPra, type: 'function', function: { name: pra.nama, arguments: JSON.stringify(pra.argumen) } }] });
+    messages.push({ role: 'tool', tool_call_id: idPra, content: JSON.stringify(hasilPra) });
+    if (hasilPra && hasilPra.sukses !== false && !hasilPra.error) toolBerhasil.add(pra.nama);
+  }
 
   while (iterasi < MAX_TOOL_ITERATIONS) {
     iterasi++;
@@ -1136,7 +1522,14 @@ async function jalankanAgent({ systemPrompt, tools, historiChat, pesanBaru, ekse
 
 // ========== EKSEKUTOR — CUSTOMER ==========
 
-async function eksekusiLihatMenu({ kategori, kelompok }, konteks) {
+async function eksekusiLihatMenu(args, konteks) {
+  let { kategori, kelompok } = args || {};
+  // "kopi" mencakup 3 kategori, "non kopi" banyak: itu KELOMPOK, bukan satu kategori
+  const kataKategori = kategori ? atribut.norm(kategori) : '';
+  // Kata kelompok dikenali fleksibel ("cemilan", "snack", "nyemil", typo ringan), tapi nama kategori asli (misal "gorengan") tetap menang
+  const adaKategoriAsli = kategori && db.getAllKategori().some((k) => atribut.norm(k.nama) === kataKategori || k.id === kataKategori);
+  const kelompokDariKata = adaKategoriAsli ? null : kelompokDariFrasa(kataKategori);
+  if (kelompokDariKata && !kelompok) { kelompok = kelompokDariKata; kategori = undefined; }
   // ---------- Kasus 0: 1 kelompok (berat / camilan / kopi / non_kopi / minuman) ----------
   if (kelompok && !kategori) {
     const daftarKat = db.getKategoriByKelompok(kelompok);
@@ -1144,6 +1537,7 @@ async function eksekusiLihatMenu({ kategori, kelompok }, konteks) {
       return { sukses: false, pesan: `Tidak ada kategori untuk kelompok "${kelompok}".` };
     }
     const idKat = daftarKat.map((k) => k.id);
+    tetapkanJalurDariKategori(konteks.jid, idKat[0]);
     const kirim = await kirimKartuKelompok(konteks, kelompok);
     const habis = db.getAllMenu().filter((m) => idKat.includes(m.kategori_id) && !m.tersedia).map((m) => m.nama);
     const daftarMenu = db.getMenuTersedia().filter((m) => idKat.includes(m.kategori_id));
@@ -1168,7 +1562,8 @@ async function eksekusiLihatMenu({ kategori, kelompok }, konteks) {
     const semuaKategori = db.getAllKategori();
     const katCocok = semuaKategori.find(
       (k) => k.nama.toLowerCase() === kategori.toLowerCase() || k.id.toLowerCase() === kategori.toLowerCase()
-    ) || semuaKategori.find((k) => k.nama.toLowerCase().includes(kategori.toLowerCase()));
+    ) || semuaKategori.find((k) => k.nama.toLowerCase().includes(kategori.toLowerCase()))
+      || semuaKategori.find((k) => k.id === atribut.cariKategoriDariTeks(kategori, semuaKategori, { persis: true }));
 
     if (!katCocok) {
       return { sukses: false, pesan: `Tidak ada kategori "${kategori}".` };
@@ -1183,6 +1578,7 @@ async function eksekusiLihatMenu({ kategori, kelompok }, konteks) {
       .filter((m) => m.kategori_id === katCocok.id && !m.tersedia)
       .map((m) => m.nama);
 
+    tetapkanJalurDariKategori(konteks.jid, katCocok.id);
     const hasilKirim = await konteks.kirimKartuKategori(konteks.jid, katCocok);
 
     return {
@@ -1220,6 +1616,55 @@ async function eksekusiLihatMenu({ kategori, kelompok }, konteks) {
     catatan_untuk_ai: hasilKirim
       ? 'Kartu semua kategori sudah/sedang dikirim terpisah oleh sistem. Sebutkan kategori apa aja secara singkat (format angka), tanya mau lihat/pesan dari kategori mana. JANGAN sebutkan nama+harga satu-satu di sini karena sudah ada di gambar kartu.'
       : 'Gambar kartu tidak tersedia. Sebutkan kategori apa aja (format angka), tanya mau lihat kategori mana.',
+  };
+}
+
+async function eksekusiCariMenuAtribut(args, konteks) {
+  const { kelompok } = args || {};
+  let daftar = db.getMenuTersedia();
+  if (kelompok) {
+    const idKat = db.getKategoriByKelompok(kelompok).map((k) => k.id);
+    if (idKat.length === 0) return { sukses: false, pesan: `Kelompok "${kelompok}" tidak dikenal (pakai: berat, camilan, kopi, non_kopi, minuman).` };
+    daftar = daftar.filter((m) => idKat.includes(m.kategori_id));
+  }
+  const ada = ['rasa', 'bahan', 'tanpa_bahan', 'bumbu', 'tanpa_bumbu', 'masak'].some((k) => Array.isArray(args?.[k]) && args[k].length)
+    || typeof args?.kuah === 'boolean' || typeof args?.pedas === 'boolean';
+  if (!ada) return { sukses: false, pesan: 'Belum ada filter. Tanya customer dulu: mau yang rasanya apa / pedas atau tidak / bahan apa.' };
+
+  const { cocok, tidakDikenal } = atribut.cari(daftar, args);
+  if (tidakDikenal.length) {
+    const kv = atribut.muat().kosakata;
+    return { sukses: false, pesan: 'Filter tidak dikenal: ' + tidakDikenal.join(', '), kosakata_rasa: kv.rasa, kosakata_masak: kv.masak, catatan_untuk_ai: 'Kalau customer menyebut bahan/bumbu yang tidak ada di menu, bilang jujur tidak ada menu dengan itu, lalu tawarkan alternatif terdekat.' };
+  }
+  if (cocok.length === 0) {
+    return { sukses: true, jumlah: 0, catatan_untuk_ai: 'Tidak ada menu tersedia yang cocok dengan kriteria itu. Bilang jujur, jangan mengarang, tawarkan melonggarkan kriteria (daftar bernomor).' };
+  }
+
+  const baris = (m) => {
+    const r = atribut.ringkas(m);
+    return {
+      nama: m.nama, kategori: m.kategori_nama, harga: rp(m.varian[0]?.harga ?? 0) + (m.varian.length > 1 ? ' (mulai)' : ''),
+      rasa: r.rasa, bahan: r.bahan_utama, bumbu: r.bumbu, cara_masak: r.cara_masak, berkuah: r.berkuah, pedas: r.pedas,
+      sambal_opsional: r.sambal_opsional || undefined,
+    };
+  };
+  const MAKS = 8;
+  const ditampilkan = cocok.slice(0, MAKS).map(baris);
+  const perKategori = {};
+  for (const m of cocok) perKategori[m.kategori_nama] = (perKategori[m.kategori_nama] || 0) + 1;
+  const bisaSambal = args?.pedas === false ? cocok.filter((m) => atribut.sambalOpsional(m)).length : 0;
+
+  return {
+    sukses: true,
+    jumlah: cocok.length,
+    menu: ditampilkan,
+    ada_lainnya: cocok.length > MAKS ? cocok.length - MAKS : undefined,
+    per_kategori: cocok.length > MAKS ? perKategori : undefined,
+    status_data: 'perkiraan_dari_data_umum_belum_diverifikasi_dapur',
+    catatan_untuk_ai: 'Sampaikan sebagai DAFTAR BERNOMOR (nama + harga + 1 frasa pendek), maks 4-5 baris, lalu tanya mau yang mana (cukup balas nomor). Data ini perkiraan, pakai kata "umumnya/biasanya", jangan menjamin.'
+      + (cocok.length > MAKS ? ' Hasilnya BANYAK (' + cocok.length + ' menu): jangan sebut semuanya; pilih yang paling pas/andalan, lalu tawarkan menyempit per kategori (lihat per_kategori) atau tambah kriteria.' : '')
+      + (bisaSambal ? ' Beberapa menu punya pilihan sambal (opsional): kalau customer tidak suka pedas, ingatkan bisa pilih "tanpa sambal".' : '')
+      + ' Kalau ada menu "sambal_opsional" dan customer tanya pedas, jelaskan sambalnya bisa dipilih ada/tidak.',
   };
 }
 
@@ -1271,6 +1716,7 @@ async function eksekusiTanyaDetailMenu({ nama_menu }, konteks) {
       })),
       kemungkinan_alergen: menu.alergen.length > 0 ? menu.alergen : 'tidak tercatat ada alergen umum, TAPI BUKAN berarti pasti bebas alergen',
       isi_mix_plate: menu.isi || undefined,
+      atribut: atribut.ringkas(menu) || undefined,
     });
     }
   }
@@ -1294,9 +1740,26 @@ const orderTerakhirPerCustomer = new Map(); // jid -> { teks, waktu }
 
 // Masukkan item hasil parse ke draft pesanan customer (buat draft baru kalau belum ada).
 // Item identik (menu, porsi, opsi, catatan) digabung jadi satu baris dengan qty bertambah.
+// Kasir diberi tahu kalau permintaan QR yang sudah masuk jadi tidak berlaku (isi pesanan berubah)
+async function beritahuKasirQrBatal(konteks, daftar) {
+  for (const p of daftar || []) {
+    const sudahTerkirim = p.status === 'TERKIRIM';
+    await kirimKeSemuaKasir(
+      konteks,
+      `❌ QR ${p.label || ''} DIBATALKAN: customer mengubah pesanan. ${sudahTerkirim ? 'QR lama sudah terkirim ke customer dan customer diminta tidak membayar pakai itu.' : 'Abaikan permintaan QR sebelumnya.'} Permintaan baru masuk setelah customer setuju rincian.`
+    );
+  }
+}
+
+// Pesanan yang sudah MENUNGGU_BAYAR dikembalikan jadi draft (isi berubah). Permintaan QR lama dibatalkan dan kasir dikabari.
+function turunkanKeDraft(konteks, pesananId) {
+  const batal = db.setStatusPesanan(pesananId, 'DRAFT_MENUNGGU_KONFIRMASI');
+  void beritahuKasirQrBatal(konteks, batal).catch((err) => console.error('❌ Gagal kabari kasir QR batal:', err.message));
+}
+
 function masukkanItemKeDraft(konteks, items) {
   // Pesanan yang masih bisa "ditambahin": yang belum dikonfirmasi, MAUPUN yang sudah MENUNGGU_BAYAR
-  // (QR sudah dikirim tapi belum lunas). Yang SELESAI/DIBATALKAN tidak kepilih, jadi pesanan baru.
+  // (QR diminta/dikirim tapi belum lunas). Yang SELESAI/DIBATALKAN/OPEN_BILL tidak kepilih, jadi pesanan baru.
   const pesananBisaDitambah = db.getDraftAtauMenungguBayarByCustomer(konteks.jid);
 
   let pesananId;
@@ -1305,8 +1768,8 @@ function masukkanItemKeDraft(konteks, items) {
   if (pesananBisaDitambah) {
     pesananId = pesananBisaDitambah.id;
     if (pesananBisaDitambah.status === 'MENUNGGU_BAYAR') {
-      // Ada tambahan setelah QR terbit -> QR lama tidak valid lagi (nominal berubah).
-      db.setStatusPesanan(pesananId, 'DRAFT_MENUNGGU_KONFIRMASI');
+      // Ada tambahan setelah QR diminta -> QR lama tidak valid lagi (nominal berubah).
+      turunkanKeDraft(konteks, pesananId);
       qrLamaJadiInvalid = true;
     }
   } else {
@@ -1357,6 +1820,8 @@ function masukkanItemKeDraft(konteks, items) {
 }
 
 async function eksekusiBuatOrder({ teks_mentah }, konteks) {
+  const pagar = pagarJam();
+  if (pagar) return pagar;
   // Customer baru dikasih daftar rekomendasi dan membalas angkanya ("1"): terjemahkan ke nama menu di kode,
   // jangan bergantung pada AI (yang kadang meneruskan angka mentah ke parser).
   const rekomendasi = db.getPendingState(konteks.jid, 'rekomendasi');
@@ -1606,12 +2071,17 @@ async function eksekusiJawabPilihanMenu({ teks_jawaban }, konteks) {
 function dataKurangUntukQr(customer, pesanan) {
   const preOrder = !!pesanan?.jam_datang && customer.status_kedatangan !== 'DI_RESTO';
   const kurang = [];
+  if (!customer.rencana_datang) kurang.push('kedatangan'); // customer yang langsung memilih menu: kedatangan ditanya di sini
   if (!customer.nama) kurang.push('nama');
   else if (!customer.sapaan) kurang.push('sapaan');
-  if (!preOrder && !customer.nomor_meja) kurang.push('nomor meja');
+  if (!preOrder && !customer.nomor_meja && customer.rencana_datang) kurang.push('nomor meja');
 
   let petunjuk = '';
-  if (kurang.includes('nama')) {
+  if (kurang.includes('kedatangan')) {
+    petunjuk = 'tanya kedatangan sebagai DAFTAR BERNOMOR, satu opsi per baris: "1. Sudah di resto" dan "2. Datang nanti (sebutkan jamnya, misal 19.30)"'
+      + (kurang.includes('nama') ? ', dan dalam pesan yang sama sekalian tanya namanya (dipakai kasir untuk mencocokkan pembayaran)' : '')
+      + '. Jawabannya -> atur_layanan (kedatangan "sekarang" atau jam HH:MM). Nomor meja ditanya SETELAH customer menjawab sudah di resto (belum perlu kalau datang nanti). Setelah nama dijawab, tanya enaknya dipanggil apa dengan DAFTAR BERNOMOR "1. Mas" dan "2. Mbak".';
+  } else if (kurang.includes('nama')) {
     petunjuk = kurang.includes('nomor meja')
       ? 'tanya nomor meja dan nama sekaligus (1 kalimat). Setelah nama dijawab, tanya enaknya dipanggil apa dengan DAFTAR BERNOMOR "1. Mas" dan "2. Mbak" (customer cukup balas satu kata).'
       : 'tanya namanya (1 kalimat), dipakai kasir untuk mencocokkan pembayaran. Setelah nama dijawab, tanya enaknya dipanggil apa dengan DAFTAR BERNOMOR "1. Mas" dan "2. Mbak" (customer cukup balas satu kata).';
@@ -1633,12 +2103,12 @@ async function eksekusiTampilkanRincianOrder(_, konteks) {
   if (draft.status === 'MENUNGGU_BAYAR') {
     return {
       sukses: false,
-      pesan: 'Pesanan ini sudah di tahap menunggu bayar (QR sudah/pernah dikirim).',
-      catatan_untuk_ai: 'Tampilkan rincian item (nama, qty, harga satuan, subtotal tiap item) dan total subtotal dengan format angka, TANPA kalimat pembuka.'
-      + (db.getInfoResto('aturan_layanan')?.harga ? ` Setelah daftar, sisipkan singkat: ${db.getInfoResto('aturan_layanan').harga}` : '')
-      + ' Di baris terakhir, 1 kalimat pendek saja: tanya apakah sudah fix untuk lanjut kirim QR. JANGAN panggil kirim_qr_pembayaran sekarang, tunggu jawaban customer berikutnya.',
+      pesan: 'Pesanan ini sudah di tahap menunggu bayar (QR sedang disiapkan kasir atau sudah dikirim).',
+      catatan_untuk_ai: 'Tampilkan rincian item (nama, qty, harga satuan, subtotal tiap item), lalu Subtotal, PPN 10%, dan Grand Total dengan format angka, TANPA kalimat pembuka. Di baris terakhir, 1 kalimat pendek: kabari status QR (lagi disiapkan kasir atau sudah dikirim) dan jangan minta konfirmasi ulang. JANGAN panggil kirim_qr_pembayaran sekarang kecuali customer menanyakan QR-nya.',
     };
   }
+  const pagar = pagarJam();
+  if (pagar) return pagar;
 
   const items = db.getItemsByPesananId(draft.id).filter((i) => i.status_item === 'AKTIF');
   if (items.length === 0) {
@@ -1648,8 +2118,41 @@ async function eksekusiTampilkanRincianOrder(_, konteks) {
       catatan_untuk_ai: 'JANGAN menulis rincian dari ingatan percakapan. Bilang jujur bahwa belum ada menu yang tercatat, lalu tanya customer mau pesan apa (atau panggil buat_order kalau dia baru saja menyebut menu).',
     };
   }
+
+  // Dine in atau take away ditanya SEKALI di akhir, sebelum rincian. Kalau ada menu yang sudah ditandai take away
+  // oleh customer sendiri, itu dianggap sudah dijawab.
+  const cust = db.getCustomer(konteks.jid);
+  if (!cust.layanan_ditanya) {
+    if (items.some((i) => i.tipe === 'TAKE_AWAY')) {
+      db.setLayananDitanya(konteks.jid, 1);
+    } else {
+      db.setPendingState(konteks.jid, 'tanya_layanan', true);
+      return {
+        sukses: false,
+        perlu_tanya_layanan: true,
+        pesan: 'Dine in atau take away belum ditanyakan.',
+        catatan_untuk_ai: 'Tanyakan SEKARANG (belum rincian): 1 kalimat pendek lalu DAFTAR BERNOMOR "1. Makan di sini (dine in)", "2. Take away semua", "3. Sebagian take away". Jawaban customer -> atur_layanan (tipe dine_in / take_away / campur); sistem lalu menampilkan rincian. JANGAN tampilkan rincian dulu.',
+      };
+    }
+  }
+
+  // Nasi: ada lauk berat tapi belum ada nasi -> tawarkan SEKALI sebelum rincian (subtotal sengaja belum diset,
+  // supaya jawaban "ya" dari customer tidak dianggap persetujuan rincian)
+  const adaNasi = items.some((i) => i.menu_id === config.info().nasi?.id_menu);
+  const adaLauk = items.some((i) => faseDariKategoriId(db.getMenuById(i.menu_id)?.kategori_id) === 'berat' && !/nasi|mie/i.test(i.nama_snapshot));
+  if (!adaNasi && adaLauk && !db.getPendingState(konteks.jid, 'nasi_ditawar')) {
+    db.setPendingState(konteks.jid, 'nasi_ditawar', true);
+    return {
+      sukses: false,
+      tawarkan_nasi: true,
+      pesan: 'Ada lauk berat tanpa nasi: tawarkan nasi putih dulu (sekali).',
+      catatan_untuk_ai: 'JANGAN tampilkan rincian dulu. Tawarkan ringan SEKALI: 1 kalimat ("Nasi putih Rp10.000, mau sekalian?") lalu DAFTAR BERNOMOR "1. Tambah nasi putih" dan "2. Nggak usah". Kalau mau -> buat_order "nasi putih" (jumlah sesuai, tanya kalau lebih dari satu orang), lalu tampilkan_rincian_order. Kalau nggak -> tampilkan_rincian_order lagi.',
+    };
+  }
+
   const subtotal = items.reduce((sum, i) => sum + i.harga_satuan_snapshot * i.qty, 0);
   db.setHargaFixPesanan(draft.id, subtotal);
+  const tagihan = config.hitungTagihan(subtotal);
 
   return {
     sukses: true,
@@ -1662,10 +2165,13 @@ async function eksekusiTampilkanRincianOrder(_, konteks) {
     }),
     nomor_pesanan: nomorPesanan(draft),
     subtotal,
-    catatan_untuk_ai: 'Tampilkan rincian item (nama, qty, harga satuan, subtotal tiap item) dan total subtotal dengan format angka, TANPA kalimat pembuka/basa-basi. Di baris terakhir, 1 kalimat pendek: '
+    ppn: tagihan.ppn,
+    grand_total: tagihan.grandTotal,
+    cara_bayar: cust.cara_bayar === 'OPEN_BILL' ? 'open bill (bayar di akhir)' : 'bayar dulu (QR)',
+    catatan_untuk_ai: 'Tampilkan rincian item (nama, qty, harga satuan, subtotal tiap item) dengan format angka, lalu tiga baris: Subtotal, PPN 10%, Grand Total (angka persis dari hasil tool ini, harga menu BELUM termasuk PPN), TANPA kalimat pembuka/basa-basi. Di baris terakhir, 1 kalimat pendek: '
       + (() => {
         const { kurang, petunjuk } = dataKurangUntukQr(db.getCustomer(konteks.jid), draft);
-        return kurang.length > 0 ? petunjuk : 'tanya boleh langsung dikirim QR pembayarannya.';
+        return kurang.length > 0 ? petunjuk : 'tanya apakah rincian sudah benar dan boleh dilanjutkan ke pembayaran.';
       })()
       + ' JANGAN panggil kirim_qr_pembayaran sekarang, tunggu jawaban customer berikutnya.',
   };
@@ -1707,7 +2213,7 @@ async function eksekusiPutuskanItemHabis(
 
   // ---------- BATAL ----------
   if (keputusan === 'batal') {
-    const nominal = item.harga_satuan_snapshot * item.qty;
+    const nominal = config.denganPpn(item.harga_satuan_snapshot * item.qty); // refund termasuk PPN yang sudah dibayar
     db.setStatusItemPesanan(item.id, 'DIBATALKAN_HABIS');
     db.hitungUlangSubtotalAktif(pesanan.id);
     db.catatRefund({
@@ -1783,7 +2289,7 @@ async function eksekusiPutuskanItemHabis(
   }
 
   const selisihPerUnit = varianBaru.harga - item.harga_satuan_snapshot;
-  const totalSelisih = Math.abs(selisihPerUnit) * item.qty;
+  const totalSelisih = config.denganPpn(Math.abs(selisihPerUnit) * item.qty); // selisih ditagih/dikembalikan sudah termasuk PPN
   const labelVarian = varianBaru.label && varianBaru.label !== 'Reguler' ? ` (${varianBaru.label})` : '';
 
   const idItemBaru = db.tambahItemPesanan(pesanan.id, {
@@ -1841,18 +2347,14 @@ async function eksekusiPutuskanItemHabis(
 
 // ---------- Helper notifikasi ke kasir ----------
 async function laporRefundKeKasir(konteks, pesanan, item, nominal, keterangan) {
-  const operatorUtama = db.getAllOperators().find((o) => o.is_utama === 1);
-  if (!operatorUtama) return;
   const customer = db.getCustomer(pesanan.customer_jid);
-  await konteks.kirimPesan(
-    operatorUtama.jid,
-    `💸 REFUND -- Pesanan ${nomorPesanan(pesanan)} (meja ${pesanan.nomor_meja || '-'}, ${customer.nama || 'customer'})\nItem: ${item.nama_snapshot}\nNominal: ${rp(nominal)}\nKeterangan: ${keterangan}\n\nMohon proses pengembalian uangnya nggih.`
+  await kirimKeSemuaKasir(
+    konteks,
+    `💸 REFUND -- Pesanan ${nomorPesanan(pesanan)} (meja ${pesanan.nomor_meja || '-'}, ${customer.nama || 'customer'})\nItem: ${item.nama_snapshot}\nNominal: ${rp(nominal)} (termasuk PPN)\nKeterangan: ${keterangan}\n\nMohon proses pengembalian uangnya nggih.`
   );
 }
 
 async function laporGantiMenuKeKasir(konteks, pesanan, itemLama, menuBaru, infoSelisih) {
-  const operatorUtama = db.getAllOperators().find((o) => o.is_utama === 1);
-  if (!operatorUtama) return;
   const customer = db.getCustomer(pesanan.customer_jid);
   const infoSelisihTeks = infoSelisih.jenis === 'kurang_bayar'
     ? `Customer perlu bayar tambahan ${rp(infoSelisih.nominal)}`
@@ -1860,8 +2362,8 @@ async function laporGantiMenuKeKasir(konteks, pesanan, itemLama, menuBaru, infoS
       ? `Refund ke customer ${rp(infoSelisih.nominal)}`
       : 'Tidak ada selisih harga';
 
-  await konteks.kirimPesan(
-    operatorUtama.jid,
+  await kirimKeSemuaKasir(
+    konteks,
     `🔄 GANTI MENU -- Pesanan ${nomorPesanan(pesanan)} (meja ${pesanan.nomor_meja || '-'}, ${customer.nama || 'customer'})\n${itemLama.nama_snapshot} -> ${menuBaru.nama}\n${infoSelisihTeks}`
   );
 }
@@ -1876,7 +2378,8 @@ async function kirimTiketPesananKeStaf(konteks, pesanan, items, { mode = 'MASAK'
     const nomor = nomorPesanan(pesanan);
     const nama = [customer.sapaan, customer.nama].filter(Boolean).join(' ') || pesanan.customer_jid.split('@')[0];
 
-    let judul = `PESANAN ${nomor} | Meja ${meja || '-'} | LUNAS (QRIS)`;
+    const openBill = mode === 'OPEN_BILL';
+    let judul = `PESANAN ${nomor} | Meja ${meja || '-'} | ${openBill ? 'OPEN BILL (BELUM BAYAR) | MASAK SEKARANG' : 'LUNAS (QRIS)'}`;
     if (preOrder) {
       judul = `PRE-ORDER ${nomor} | LUNAS (QRIS) | datang jam ${pesanan.jam_datang} | ${mode === 'TUNGGU' ? 'BELUM DIMASAK' : 'MASAK SEKARANG'}`;
     }
@@ -1886,7 +2389,7 @@ async function kirimTiketPesananKeStaf(konteks, pesanan, items, { mode = 'MASAK'
       `Customer: ${nama}`,
       ...barisItemUntukStaf(items),
       ...barisCatatanPesanan(pesanan),
-      `Total: ${rupiahId(pesanan.total_dibayar || pesanan.subtotal || 0)}`,
+      ...nota.barisTotal(nota.hitungDariItem(items)),
       '',
     ];
     if (preOrder && mode === 'TUNGGU') {
@@ -1942,49 +2445,9 @@ async function kirimKeSemuaOperator(konteks, pesan) {
   }
 }
 
-// Meja masuk status menunggu bayar: kasir langsung tahu meja, nama, isi pesanan, dan nominal yang harus masuk.
-async function kirimInfoMenungguBayarKeKasir(konteks, pesanan, nominal) {
-  try {
-    const customer = db.getCustomer(pesanan.customer_jid);
-    const preOrder = !!pesanan.jam_datang && customer.status_kedatangan !== 'DI_RESTO';
-    const meja = customer.nomor_meja || pesanan.nomor_meja;
-    const nama = [customer.sapaan, customer.nama].filter(Boolean).join(' ') || '-';
-    const lokasi = preOrder ? `datang jam ${pesanan.jam_datang}` : `Meja ${meja || '-'}`;
-    const cara = meja
-      ? `"pesanan ${pesanan.no_harian} udah bayar" (atau "meja ${meja} udah bayar")`
-      : `"pesanan ${pesanan.no_harian} udah bayar"`;
-    const pesan = [
-      `💳 MENUNGGU BAYAR | Pesanan ${nomorPesanan(pesanan)} | ${nama} | ${lokasi}`,
-      ...barisItemUntukStaf(db.getItemsByPesananId(pesanan.id)),
-      ...barisCatatanPesanan(pesanan),
-      `Total: ${rp(nominal)}`,
-      '',
-      `Kalau pembayaran sudah masuk, bilang: ${cara}`,
-    ].join('\n');
-    await kirimKeSemuaOperator(konteks, pesan);
-  } catch (err) {
-    console.error('❌ Gagal kirim info menunggu bayar ke kasir:', err.message);
-  }
-}
-
-async function kirimInfoKekuranganKeKasir(konteks, tagihan, nominal) {
-  try {
-    const pesanan = db.getPesananById(tagihan.pesanan_id);
-    const customer = db.getCustomer(pesanan.customer_jid);
-    const meja = customer.nomor_meja || pesanan.nomor_meja || '-';
-    const pesan = [
-      `💳 KEKURANGAN BAYAR | Meja ${meja} | ${customer.nama || '-'}`,
-      `Pesanan ${nomorPesanan(pesanan)}, kekurangan akibat ganti menu: ${rp(nominal)}`,
-      '',
-      `Kalau sudah masuk, bilang: "kekurangan meja ${meja} udah masuk"`,
-    ].join('\n');
-    await kirimKeSemuaOperator(konteks, pesan);
-  } catch (err) {
-    console.error('❌ Gagal kirim info kekurangan ke kasir:', err.message);
-  }
-}
-
 async function eksekusiKirimQrPembayaran(_, konteks) {
+  const pagar = pagarJam();
+  if (pagar) return pagar;
   const draft = db.getDraftAtauMenungguBayarByCustomer(konteks.jid);
   if (!draft) {
     return { sukses: false, pesan: 'Tidak ada draft pesanan yang menunggu konfirmasi saat ini.' };
@@ -2002,7 +2465,7 @@ async function eksekusiKirimQrPembayaran(_, konteks) {
     return {
       sukses: false,
       pesan: `${kurang.join(' dan ')} customer belum ada, QR belum bisa dikirim.`,
-      catatan_untuk_ai: `${petunjuk} Nama/sapaan -> simpan_nama, meja -> konfirmasi_kedatangan (bisa sekalian isi nama). Kalau customer sebelumnya sudah setuju kirim QR, setelah data lengkap langsung panggil kirim_qr_pembayaran.`,
+      catatan_untuk_ai: `${petunjuk} Kedatangan -> atur_layanan, nama/sapaan -> simpan_nama, meja -> konfirmasi_kedatangan (bisa sekalian isi nama). Kalau customer sebelumnya sudah setuju kirim QR, setelah data lengkap langsung panggil kirim_qr_pembayaran.`,
     };
   }
 
@@ -2026,31 +2489,132 @@ async function eksekusiKirimQrPembayaran(_, konteks) {
     };
   }
 
-  // Nominal bayar = subtotal persis, tanpa kode unik. Kasir mencocokkan lewat info meja + nama.
-  const nominalTransfer = draft.subtotal;
-  const barusajaMenungguBayar = draft.status !== 'MENUNGGU_BAYAR'; // kirim ulang QR tidak perlu lapor kasir lagi
+  // Open bill: langsung ke dapur tanpa QR (hanya kalau customer yang memintanya)
+  if (dataCustomer.cara_bayar === 'OPEN_BILL') {
+    return mulaiOpenBill(draft, itemDraft, konteks);
+  }
 
-  db.setNominalTransfer(draft.id, nominalTransfer);
-  db.setStatusPesanan(draft.id, 'MENUNGGU_BAYAR');
+  // Bayar dulu. Nominal = Grand Total (subtotal + PPN) persis. QR dibuat kasir di POS lalu fotonya diteruskan ke customer.
+  const grandTotal = draft.grand_total ?? config.hitungTagihan(draft.subtotal).grandTotal;
+  db.setNominalTransfer(draft.id, grandTotal);
+  if (draft.status !== 'MENUNGGU_BAYAR') db.setStatusPesanan(draft.id, 'MENUNGGU_BAYAR');
+  const pesananIni = db.getPesananById(draft.id);
 
-  const customer = db.getCustomer(konteks.jid);
-  const qrTerkirim = await konteks.kirimQrKeCustomer(draft.id, nominalTransfer);
+  let permintaan = db.getPermintaanQrByPesanan(draft.id);
+  let statusQr;
 
-  if (barusajaMenungguBayar) {
-    await kirimInfoMenungguBayarKeKasir(konteks, db.getPesananById(draft.id), nominalTransfer);
+  if (!permintaan) {
+    permintaan = db.buatPermintaanQr({
+      jenis: 'PESANAN', refIds: [draft.id], customerJid: konteks.jid,
+      label: nomorPesanan(pesananIni), nominal: grandTotal,
+    });
+    const terkirimKeKasir = await kirimTiketPermintaanQr(konteks, permintaan, teksPermintaanQrPesanan(pesananIni, dataCustomer, itemDraft));
+    if (!terkirimKeKasir) {
+      return { sukses: false, pesan: 'Tidak ada kasir yang terdaftar/terjangkau.', catatan_untuk_ai: 'Beri tahu customer ada kendala dan minta hubungi kasir langsung.' };
+    }
+    statusQr = 'MENUNGGU_KASIR';
+  } else if (permintaan.status === 'TERKIRIM') {
+    // Customer menanyakan QR yang sudah pernah dikirim: kirim ulang fotonya
+    const ok = await konteks.kirimQrKeCustomer(permintaan.id);
+    statusQr = ok ? 'DIKIRIM_ULANG' : 'GAGAL_KIRIM_ULANG';
+  } else {
+    // Masih menunggu kasir: colek kasir (maksimal sekali tiap 2 menit supaya tidak spam)
+    const terakhir = permintaan.pengingat_at ? Date.now() - new Date(permintaan.pengingat_at).getTime() : Infinity;
+    if (terakhir > 2 * 60 * 1000) {
+      db.catatPengingatQr(permintaan.id);
+      await kirimKeSemuaKasir(konteks, `🔔 Customer menanyakan QR ${permintaan.label} (${sebutCustomer(dataCustomer, konteks.jid)}, ${rp(grandTotal)}). Mohon kirim foto QR-nya ke sini sebagai reply tiket MINTA QR ya.`);
+    }
+    statusQr = 'MASIH_MENUNGGU_KASIR';
   }
 
   return {
     sukses: true,
     pesanan_id: draft.id,
-    nomor_pesanan: nomorPesanan(db.getPesananById(draft.id)),
-    nominal_transfer: nominalTransfer,
-    nomor_meja: customer.nomor_meja || null,
-    qr_terkirim: qrTerkirim,
-    catatan_untuk_ai: qrTerkirim
-      ? 'QR sudah dikirim beserta totalnya. Cukup konfirmasi singkat ke customer, kasir sudah diberi tahu.'
-      : 'PENTING: QR GAGAL terkirim. Beri tahu customer dengan natural bahwa ada kendala, minta mereka hubungi kasir langsung.',
+    nomor_pesanan: nomorPesanan(pesananIni),
+    subtotal: pesananIni.subtotal,
+    ppn: pesananIni.ppn,
+    grand_total: grandTotal,
+    nomor_meja: dataCustomer.nomor_meja || null,
+    status_qr: statusQr,
+    catatan_untuk_ai: {
+      MENUNGGU_KASIR: `Permintaan QR sudah diteruskan ke kasir (Grand Total ${rp(grandTotal)}, sudah termasuk PPN). QR-nya BELUM dikirim: kasir yang membuatnya lalu otomatis diteruskan ke customer. Bilang 1 kalimat: QR lagi disiapkan kasir, sebentar ya (sebut total ${rp(grandTotal)}). JANGAN bilang QR sudah dikirim.`,
+      MASIH_MENUNGGU_KASIR: 'QR masih disiapkan kasir, kasir sudah diingatkan. Bilang 1 kalimat: sebentar lagi, masih disiapkan kasir.',
+      DIKIRIM_ULANG: 'QR sudah dikirim ulang ke customer barusan. Cukup konfirmasi 1 kalimat.',
+      GAGAL_KIRIM_ULANG: 'Gagal mengirim ulang QR. Bilang ada kendala dan kasir akan mengirimnya.',
+    }[statusQr],
   };
+}
+
+// Teks permintaan QR ke kasir (pesanan bayar dulu)
+function teksPermintaanQrPesanan(pesanan, customer, items) {
+  const preOrder = !!pesanan.jam_datang && customer.status_kedatangan !== 'DI_RESTO';
+  const meja = customer.nomor_meja || pesanan.nomor_meja;
+  const lokasi = preOrder ? `datang jam ${pesanan.jam_datang}` : `Meja ${meja || '-'}`;
+  const nomor = nomorPesanan(pesanan);
+  return [
+    `💳 MINTA QR | Pesanan ${nomor} | ${sebutCustomer(customer, pesanan.customer_jid)} | ${lokasi}`,
+    ...nota.barisItem(items).map((b) => b),
+    ...nota.barisTotal(nota.hitungDariItem(items)),
+    ...barisCatatanPesanan(pesanan),
+    '',
+    `Buat QRIS ${rp(pesanan.grand_total ?? nota.hitungDariItem(items).grandTotal)} di POS, foto QR-nya, lalu kirim ke chat ini sebagai REPLY pesan ini (atau tulis "pesanan ${pesanan.no_harian}" di caption).`,
+    `Kalau pembayaran sudah masuk, bilang: "pesanan ${pesanan.no_harian} udah bayar"`,
+  ].join('\n');
+}
+
+// OPEN BILL: pesanan langsung ke dapur, dibayar di akhir. Hanya dine in (take away dan pre-order wajib bayar dulu).
+async function mulaiOpenBill(draft, items, konteks) {
+  const customer = db.getCustomer(konteks.jid);
+  const preOrder = !!draft.jam_datang && customer.status_kedatangan !== 'DI_RESTO';
+  const adaTakeAway = items.some((i) => i.tipe === 'TAKE_AWAY');
+  if (preOrder || adaTakeAway) {
+    db.setCaraBayar(konteks.jid, null);
+    return {
+      sukses: false,
+      open_bill_ditolak: true,
+      pesan: preOrder ? 'Pre-order tidak bisa open bill.' : 'Menu take away tidak bisa open bill.',
+      catatan_untuk_ai: `Open bill hanya untuk makan di tempat. ${preOrder ? 'Pesanan ini pre-order (belum sampai)' : 'Pesanan ini ada menu take away'}, jadi wajib bayar dulu. Sampaikan santai 1-2 kalimat, tanya apakah lanjut bayar dulu (DAFTAR BERNOMOR "1. Lanjut bayar dulu" dan "2. Ubah pesanan"). Kalau lanjut -> kirim_qr_pembayaran lagi.`,
+    };
+  }
+
+  db.setMetodeBayarPesanan(draft.id, 'OPEN_BILL');
+  db.setStatusPesanan(draft.id, 'OPEN_BILL');
+  db.setCaraBayar(konteks.jid, null);
+  db.mulaiKunjungan(konteks.jid, customer.nomor_meja);
+
+  // Bill yang sudah diminta sebelumnya jadi tidak berlaku (ada pesanan baru)
+  const billLama = db.getPesananOpenBillByCustomer(konteks.jid)
+    .map((p) => db.getPermintaanQrByPesanan(p.id)).filter((r) => r && r.jenis === 'BILL');
+  for (const r of new Map(billLama.map((x) => [x.id, x])).values()) {
+    db.setPermintaanQrBatal(r.id);
+    await beritahuKasirQrBatal(konteks, [r]);
+  }
+
+  const pesananFinal = db.getPesananById(draft.id);
+  await kirimTiketPesananKeStaf(konteks, pesananFinal, db.getItemsByPesananId(draft.id), { mode: 'OPEN_BILL' });
+  const alur = db.getAlur(konteks.jid);
+  db.setAlur(konteks.jid, { ...alur, tutup: true });
+
+  // Tawaran kuis dikirim sistem sebagai pesan terpisah SETELAH balasan AI (lihat index.js, state 'tambahan_balasan')
+  const kuisMsg = tawaranKuisSekali(konteks.jid);
+  if (kuisMsg) db.setPendingState(konteks.jid, 'tambahan_balasan', kuisMsg);
+  return {
+    sukses: true,
+    open_bill: true,
+    nomor_pesanan: nomorPesanan(pesananFinal),
+    grand_total: pesananFinal.grand_total,
+    catatan_untuk_ai: `Pesanan ${nomorPesanan(pesananFinal)} (open bill) sudah diteruskan ke dapur, bayarnya nanti di akhir. Bilang 1 kalimat: sudah masuk dapur, bayar belakangan, dan kalau mau bayar tinggal bilang "minta bill". ${kuisMsg ? 'Sistem mengirim tawaran kuis sebagai pesan terpisah, jangan menawarkan kuis.' : ''}`,
+  };
+}
+
+// Kuis Banyumasan ditawarkan SEKALI per kunjungan setelah pesanan masuk dapur. Mengembalikan teks tawaran (atau null kalau sudah pernah).
+function tawaranKuisSekali(jid) {
+  if (config.kuis().soal.length === 0) return null;
+  const k = db.getKunjunganAktif(jid);
+  if (!k || k.kuis_ditawarkan) return null;
+  db.updateKunjungan(k.id, { kuis_ditawarkan: 1 });
+  db.setPendingState(jid, 'kuis_tawaran', true);
+  return 'Sambil nunggu pesanannya, mau coba kuis Banyumasan? Balas "kuis" kalau mau, atau abaikan aja 😄';
 }
 
 async function eksekusiKirimQrKekurangan(_, konteks) {
@@ -2059,23 +2623,45 @@ async function eksekusiKirimQrKekurangan(_, konteks) {
     return { sukses: false, pesan: 'Tidak ada kekurangan bayar yang perlu ditagih saat ini.' };
   }
 
-  const nominalTransfer = tagihan.nominal; // persis nominal kekurangan, tanpa kode unik
+  const nominalTransfer = tagihan.nominal; // persis nominal kekurangan (sudah termasuk PPN)
   const barusaja = tagihan.status === 'MENUNGGU_KONFIRMASI';
   if (barusaja) db.setTagihanMenungguBayar(tagihan.id, nominalTransfer);
-  // kalau sudah MENUNGGU_BAYAR, QR yang sama dikirim ulang
 
-  const terkirim = await konteks.kirimQrKekuranganKeCustomer(tagihan.id);
-  if (barusaja) await kirimInfoKekuranganKeKasir(konteks, tagihan, nominalTransfer);
+  // QR dinamis: kasir membuat QR kekurangan, fotonya diteruskan ke customer
+  let permintaan = db.getPermintaanQrByRef('TAGIHAN', tagihan.id);
+  let statusQr;
+  if (!permintaan) {
+    const pesananT = db.getPesananById(tagihan.pesanan_id);
+    permintaan = db.buatPermintaanQr({
+      jenis: 'TAGIHAN', refIds: [tagihan.id], customerJid: konteks.jid,
+      label: `kekurangan ${nomorPesanan(pesananT)}`, nominal: nominalTransfer,
+    });
+    const c = db.getCustomer(konteks.jid);
+    await kirimTiketPermintaanQr(konteks, permintaan, [
+      `💳 MINTA QR KEKURANGAN | Pesanan ${nomorPesanan(pesananT)} | ${sebutCustomer(c, konteks.jid)} | Meja ${c.nomor_meja || pesananT.nomor_meja || '-'}`,
+      `Kekurangan akibat ganti menu: ${rp(nominalTransfer)} (sudah termasuk PPN).`,
+      '',
+      `Buat QRIS ${rp(nominalTransfer)} di POS, foto QR-nya, lalu kirim ke chat ini sebagai REPLY pesan ini.`,
+      `Kalau sudah masuk, bilang: "kekurangan meja ${c.nomor_meja || pesananT.nomor_meja || ''} udah masuk"`,
+    ].join('\n'));
+    statusQr = 'MENUNGGU_KASIR';
+  } else if (permintaan.status === 'TERKIRIM') {
+    statusQr = (await konteks.kirimQrKeCustomer(permintaan.id)) ? 'DIKIRIM_ULANG' : 'GAGAL';
+  } else {
+    statusQr = 'MASIH_MENUNGGU_KASIR';
+  }
 
   return {
     sukses: true,
     tagihan_id: tagihan.id,
     nominal_kekurangan: tagihan.nominal,
     nominal_transfer: nominalTransfer,
-    qr_terkirim: terkirim,
-    catatan_untuk_ai: terkirim
-      ? 'QR kekurangan sudah dikirim terpisah beserta nominalnya. Cukup konfirmasi singkat ke customer.'
-      : 'PENTING: QR GAGAL terkirim. Beri tahu customer dengan natural bahwa ada kendala, minta mereka hubungi kasir langsung.',
+    status_qr: statusQr,
+    catatan_untuk_ai: statusQr === 'DIKIRIM_ULANG'
+      ? 'QR kekurangan sudah dikirim ulang. Cukup konfirmasi singkat ke customer.'
+      : statusQr === 'GAGAL'
+        ? 'PENTING: QR GAGAL terkirim. Bilang ada kendala dan kasir akan mengirimnya.'
+        : `Permintaan QR kekurangan ${rp(nominalTransfer)} sudah diteruskan ke kasir. QR BELUM dikirim: kasir yang membuatnya lalu diteruskan otomatis. Bilang 1 kalimat: QR kekurangannya lagi disiapkan kasir.`,
   };
 }
 
@@ -2132,7 +2718,7 @@ async function eksekusiHapusItemOrder({ nama_menu }, konteks) {
 
   // Isi pesanan berubah: kalau QR sudah terbit, turunkan lagi ke draft dan paksa rincian ulang
   const qrLamaJadiInvalid = draft.status === 'MENUNGGU_BAYAR';
-  if (qrLamaJadiInvalid) db.setStatusPesanan(draft.id, 'DRAFT_MENUNGGU_KONFIRMASI');
+  if (qrLamaJadiInvalid) turunkanKeDraft(konteks, draft.id);
   db.setHargaFixPesanan(draft.id, null);
 
   return {
@@ -2149,6 +2735,7 @@ async function eksekusiHapusItemOrder({ nama_menu }, konteks) {
 const LABEL_STATUS_PESANAN = {
   DRAFT_MENUNGGU_KONFIRMASI: 'draft, belum dikonfirmasi customer',
   MENUNGGU_BAYAR: 'menunggu pembayaran',
+  OPEN_BILL: 'open bill, sudah di dapur, dibayar di akhir',
   SELESAI: 'sudah lunas, diteruskan ke dapur',
   DIBATALKAN: 'dibatalkan',
 };
@@ -2159,7 +2746,8 @@ function ringkasPesanan(p) {
   const semua = db.getItemsByPesananId(p.id);
   const aktif = semua.filter((i) => i.status_item === 'AKTIF');
   const menunggu = semua.filter((i) => i.status_item === 'MENUNGGU_KEPUTUSAN_HABIS');
-  const totalSaatIni = aktif.reduce((s, i) => s + i.harga_satuan_snapshot * i.qty, 0);
+  const totalSaatIni = aktif.reduce((s, i) => s + i.harga_satuan_snapshot * i.qty, 0); // subtotal, belum PPN
+  const tagihanSaatIni = config.hitungTagihan(totalSaatIni);
   const totalRefund = db.getRefundByPesanan(p.id).reduce((s, r) => s + r.nominal, 0);
 
   return {
@@ -2173,6 +2761,9 @@ function ringkasPesanan(p) {
     items: aktif.map((i) => labelItem(i)),
     menunggu_keputusan_habis: menunggu.length > 0 ? menunggu.map((i) => i.nama_snapshot) : undefined,
     total_item_saat_ini: totalSaatIni,
+    ppn_saat_ini: tagihanSaatIni.ppn,
+    grand_total_saat_ini: tagihanSaatIni.grandTotal,
+    cara_bayar: p.metode_bayar === 'OPEN_BILL' ? 'open bill' : undefined,
     total_dibayar: p.status === 'SELESAI' ? p.total_dibayar : undefined,
     total_refund: totalRefund > 0 ? totalRefund : undefined,
     nominal_transfer: p.status === 'MENUNGGU_BAYAR' ? p.nominal_transfer : undefined,
@@ -2219,11 +2810,20 @@ async function eksekusiCekStatusOrder({ pesanan_id, nomor_pesanan }) {
 
 async function eksekusiKonfirmasiKedatangan({ nomor_meja, nama }, konteks) {
   const meja = db.normalisasiMeja(nomor_meja);
-  if (!meja) return { sukses: false, pesan: 'Nomor meja tidak terbaca.' };
 
   // Nama (kalau disebut bersamaan) disimpan dulu, tidak tergantung meja diterima atau tidak
   const namaBersih = String(nama || '').trim().replace(/^(mas|mbak|mba|kak)\s+/i, '');
   if (namaBersih) db.setCustomerNama(konteks.jid, namaBersih);
+
+  if (!meja) {
+    // Customer bilang "sudah di resto" tanpa menyebut nomor meja: catat kedatangannya, mejanya ditanyakan
+    if (!db.getCustomer(konteks.jid).rencana_datang) db.setLayanan(konteks.jid, { rencana: 'SEKARANG' });
+    return {
+      sukses: false,
+      pesan: 'Nomor meja belum disebut / tidak terbaca.',
+      catatan_untuk_ai: 'Nama (kalau ada) sudah tersimpan dan kedatangan "sudah di resto" tercatat. Tanya nomor mejanya (1 kalimat). JANGAN mengisi nomor_meja dengan teks karangan seperti "belum disebut".',
+    };
+  }
 
   // Kunci meja per orang: meja yang masih dipakai customer lain tidak bisa diambil
   if (db.getPemakaiMeja(meja, konteks.jid)) {
@@ -2247,6 +2847,7 @@ async function eksekusiKonfirmasiKedatangan({ nomor_meja, nama }, konteks) {
   const sesudah = db.getCustomer(konteks.jid);
   const namaLengkap = [sesudah.sapaan, sesudah.nama].filter(Boolean).join(' ') || 'customer';
   const preOrder = db.getPreOrderAktifByCustomer(konteks.jid);
+  if (preOrder.length > 0) db.mulaiKunjungan(konteks.jid, meja); // pre-order lunas: kunjungan (timer 3 jam & rating) dimulai saat sampai
   for (const p of preOrder) {
     const sudahDimasak = p.jadwal_status === 'DIKONFIRMASI';
     db.setJadwalPesanan(p.id, { jadwalStatus: 'DIKONFIRMASI' });
@@ -2315,7 +2916,7 @@ async function eksekusiUbahJumlahItem({ nama_menu, jumlah }, konteks) {
   db.setHargaFixPesanan(draft.id, null);
 
   const qrLamaJadiInvalid = draft.status === 'MENUNGGU_BAYAR';
-  if (qrLamaJadiInvalid) db.setStatusPesanan(draft.id, 'DRAFT_MENUNGGU_KONFIRMASI');
+  if (qrLamaJadiInvalid) turunkanKeDraft(konteks, draft.id);
 
   const semua = db.getItemsByPesananId(draft.id).filter((i) => i.status_item === 'AKTIF');
   const alur = db.getAlur(konteks.jid);
@@ -2384,6 +2985,29 @@ function sapaanDariPesan(pesan) {
   return null;
 }
 
+// Dipanggil SEBELUM agent jalan: kalau bot barusan menanyakan kedatangan (daftar "Sudah di resto" / "Datang nanti") dan customer
+// menjawab "sudah di resto", "1", atau menyebut jam, kedatangan dicatat oleh kode. Jawaban gabungan ("sudah di resto, namaku Budi")
+// sering hanya ditangkap sebagian oleh AI (nama saja), jadi bagian kedatangannya tidak boleh bergantung pada AI.
+async function tangkapJawabanKedatangan(jid, pesan, histori) {
+  const c = db.getCustomer(jid);
+  if (!c || c.rencana_datang) return false;
+  const terakhir = [...(histori || [])].reverse().find((m) => m.role === 'assistant');
+  if (!terakhir || !/sudah di resto/i.test(terakhir.content) || !/datang nanti|jamnya/i.test(terakhir.content)) return false;
+  const t = String(pesan || '').toLowerCase();
+  const jam = t.match(/\b(?:jam|pukul)\s*(\d{1,2})(?:[.:](\d{2}))?|\b(\d{1,2})[.:](\d{2})\b/);
+  let kedatangan = null;
+  if (jam) {
+    const jj = jam[1] ?? jam[3]; const mm = jam[2] ?? jam[4] ?? '00';
+    kedatangan = `${jj}:${mm}`;
+  } else if (!/\b(nanti|belum|ntar)\b/.test(t) && (/\b(sudah|udah|dah|lagi)\s+(di\s+)?(resto|sini|disini|sampai|nyampe)\b|\bdi\s+resto\b|^\s*(nomor\s+|no\s+)?1\s*[.,!]?\s*$/.test(t))) {
+    kedatangan = 'sekarang';
+  }
+  if (!kedatangan) return false;
+  const hasil = await eksekusiAturLayanan({ kedatangan }, { jid });
+  console.log(`🧭 Kode mencatat kedatangan (${kedatangan}): ${hasil.sukses ? 'ok' : hasil.pesan}`);
+  return hasil.sukses === true;
+}
+
 // Dipanggil SEBELUM agent jalan: kalau bot barusan menanyakan "dipanggil apa" dan customer menjawab ("Mas", "1", "Mbak"),
 // sapaan disimpan di sini oleh kode, tanpa bergantung pada AI yang kadang lupa memanggil tool.
 function tangkapJawabanSapaan(jid, pesan, histori) {
@@ -2407,7 +3031,9 @@ function selaraskanDaftarPesanan(jid, teks, { rincianDitampilkan = false } = {})
   const baris = String(teks).split('\n');
   const draft = db.getDraftAtauMenungguBayarByCustomer(jid);
   const items = draft ? db.getItemsByPesananId(draft.id).filter((i) => i.status_item === 'AKTIF') : [];
-  const total = items.reduce((sum, i) => sum + i.harga_satuan_snapshot * i.qty, 0);
+  const tagihan = nota.hitungDariItem(items);
+  const total = tagihan.subtotal;
+  const barisTotalNota = nota.barisTotal(tagihan); // Subtotal, PPN 10%, Grand Total (dihitung kode)
 
   const barisRincian = (i, n) => {
     const pilihan = db.pilihanTampil(i);
@@ -2419,8 +3045,8 @@ function selaraskanDaftarPesanan(jid, teks, { rincianDitampilkan = false } = {})
   const idx = baris.findIndex((l) => /^\s*(pesanan sementara|rincian pesanan)\b[^\n]*:\s*$/i.test(l));
   if (idx < 0) {
     // Tidak ada blok, tapi rincian baru saja dipanggil dan balasan tidak memuat totalnya: sisipkan blok dari DB
-    if (rincianDitampilkan && draft && items.length > 0 && !String(teks).includes(rp(total))) {
-      const blok = ['Rincian pesanan ' + nomorPesanan(draft) + ':', ...items.map(barisRincian), 'Total: ' + rp(total), ''];
+    if (rincianDitampilkan && draft && items.length > 0 && !String(teks).includes(rp(tagihan.grandTotal))) {
+      const blok = ['Rincian pesanan ' + nomorPesanan(draft) + ':', ...items.map(barisRincian), ...barisTotalNota, ''];
       return blok.join('\n') + '\n' + String(teks);
     }
     return String(teks);
@@ -2432,14 +3058,14 @@ function selaraskanDaftarPesanan(jid, teks, { rincianDitampilkan = false } = {})
   if (rincian) {
     let j = akhir;
     while (j < baris.length && baris[j].trim() === '') j++;
-    while (j < baris.length && /^\s*(sub)?total\b/i.test(baris[j])) { akhir = j + 1; j = akhir; }
+    while (j < baris.length && /^\s*(sub ?total|ppn|pajak|grand ?total|total)\b/i.test(baris[j])) { akhir = j + 1; j = akhir; }
   }
 
   let blok;
   if (!draft || items.length === 0) {
     blok = ['Belum ada menu yang tercatat di pesananmu nih.'];
   } else if (rincian) {
-    blok = ['Rincian pesanan ' + nomorPesanan(draft) + ':', ...items.map(barisRincian), 'Total: ' + rp(total)];
+    blok = ['Rincian pesanan ' + nomorPesanan(draft) + ':', ...items.map(barisRincian), ...barisTotalNota];
   } else {
     blok = ['Pesanan sementara:', ...items.map((i, n) => (n + 1) + '. ' + labelItem(i))];
   }
@@ -2447,7 +3073,7 @@ function selaraskanDaftarPesanan(jid, teks, { rincianDitampilkan = false } = {})
   return baris.join('\n');
 }
 
-function rapikanBalasanCustomer(jid, teks, { pertama = false, rincianDitampilkan = false } = {}) {
+function rapikanBalasanCustomer(jid, teks, { pertama = false, rincianDitampilkan = false, sudahDilayani = false } = {}) {
   let hasil = String(teks || '');
   if (!hasil) return hasil;
   const c = db.getCustomer(jid);
@@ -2459,7 +3085,7 @@ function rapikanBalasanCustomer(jid, teks, { pertama = false, rincianDitampilkan
     hasil = hasil.replace(new RegExp(`\\b(?:mas|mbak|mba)\\s+${nama}\\b`, 'gi'), c.nama);
   }
 
-  if (pertama && !c.rencana_datang && !db.getDraftAtauMenungguBayarByCustomer(jid) && !/^\s*2\.\s/m.test(hasil)) {
+  if (pertama && !sudahDilayani && !c.rencana_datang && !db.getDraftAtauMenungguBayarByCustomer(jid) && !/^\s*2\.\s/m.test(hasil)) {
     hasil = `${hasil.trimEnd()}\n1. Sudah di resto\n2. Datang nanti (sebutkan jamnya, misal 19.30)`;
   }
   return hasil;
@@ -2503,7 +3129,8 @@ async function eksekusiRekomendasiMenu({ kelompok }, konteks) {
   const tersedia = db.getMenuTersedia();
   const idKat = kelompok ? new Set(db.getKategoriByKelompok(kelompok).map((k) => k.id)) : null;
   const sesuai = (m) => !idKat || idKat.has(m.kategori_id);
-  let kandidat = tersedia.filter((m) => m.andalan && sesuai(m));
+  // Menu margin dan andalan didahulukan (urutan tetap, supaya pengecekan "rekomendasi sama persis" di bawah bekerja)
+  let kandidat = urutkanPrioritas(tersedia.filter((m) => (adaMargin(m) || m.andalan) && sesuai(m)), { acak: false });
   if (kandidat.length === 0) kandidat = tersedia.filter(sesuai);
 
   const bentuk = (m) => ({
@@ -2576,6 +3203,7 @@ async function eksekusiAturLayanan({ tipe, kedatangan }, konteks) {
     }
   }
   db.setLayanan(konteks.jid, ubah);
+  if (tipe) db.setLayananDitanya(konteks.jid, 1);
 
   // Terapkan ke draft yang sudah ada (customer yang langsung memesan lalu baru menjawab pertanyaan layanan)
   const draft = db.getDraftAtauMenungguBayarByCustomer(konteks.jid);
@@ -2584,14 +3212,44 @@ async function eksekusiAturLayanan({ tipe, kedatangan }, konteks) {
     if (ubah.rencana) db.setJadwalPesanan(draft.id, { jamDatang: ubah.rencana === 'SEKARANG' ? null : ubah.rencana });
   }
 
+  // Customer baru menjawab pertanyaan "dine in atau take away" di akhir: lanjut ke rincian di giliran yang sama
+  if (tipe && db.getPendingState(konteks.jid, 'tanya_layanan')) {
+    db.clearPendingState(konteks.jid, 'tanya_layanan');
+    const dr = db.getDraftAtauMenungguBayarByCustomer(konteks.jid);
+    if (tipe === 'campur' && dr) {
+      const daftar = db.getItemsByPesananId(dr.id).filter((i) => i.status_item === 'AKTIF');
+      return {
+        sukses: true,
+        layanan: 'campur',
+        item_di_draft: daftar.map((i, n) => `${n + 1}. ${i.nama_snapshot}`),
+        catatan_untuk_ai: 'Customer mau sebagian take away. Tanyakan menu mana yang take away sebagai DAFTAR BERNOMOR dari item_di_draft (boleh balas beberapa nomor). Jawabannya -> ubah_tipe_item per menu (tipe take_away), lalu tampilkan_rincian_order.',
+      };
+    }
+    if (dr) {
+      const rincian = await eksekusiTampilkanRincianOrder({}, konteks);
+      return { ...rincian, layanan: LABEL_TIPE[ubah.tipe] };
+    }
+  }
+
   const c = db.getCustomer(konteks.jid);
   const lengkap = !!c.rencana_datang;
+  const draftSekarang = db.getDraftAtauMenungguBayarByCustomer(konteks.jid);
+  const sudahMulai = !!draftSekarang || !!db.getAlur(konteks.jid).jalur; // customer sudah memilih/memesan sebelum ditanya kedatangan
+  let lanjut = 'LANJUT tanya mau mulai dari mana sebagai DAFTAR BERNOMOR: "1. Makan berat" dan "2. Nyemil". JANGAN tanya dine in/take away sekarang (ditanya di akhir). ';
+  if (lengkap && sudahMulai) {
+    if (draftSekarang?.subtotal) {
+      const { kurang, petunjuk } = dataKurangUntukQr(c, draftSekarang);
+      lanjut = kurang.length > 0 ? 'LANJUT: ' + petunjuk + ' ' : 'LANJUT: tanya apakah rincian sudah benar dan boleh dilanjutkan ke pembayaran. ';
+    } else {
+      lanjut = 'Customer sudah memulai pesanan, JANGAN tanya mau mulai dari mana lagi; lanjutkan alur sebelumnya. ';
+    }
+  }
   return {
     sukses: true,
     layanan: LABEL_TIPE[c.tipe_default] || 'dine in (default)',
     kedatangan: c.rencana_datang === 'SEKARANG' ? 'sudah di resto' : c.rencana_datang ? `datang jam ${c.rencana_datang}` : null,
     catatan_untuk_ai: (lengkap
-      ? 'Kedatangan tercatat. Konfirmasi singkat (1 kalimat), lalu LANJUT tanya mau mulai dari mana sebagai DAFTAR BERNOMOR: "1. Makan berat" dan "2. Nyemil". JANGAN tanya dine in/take away. '
+      ? 'Kedatangan tercatat. Konfirmasi singkat (1 kalimat), lalu ' + lanjut
       : 'Kedatangan belum jelas: tanya lagi sebagai DAFTAR BERNOMOR ("1. Sudah di resto" / "2. Datang nanti (sebutkan jamnya)"). ')
       + (ubah.rencana && ubah.rencana !== 'SEKARANG' ? 'Sebut singkat (sekali): pesanan dibayar dulu lewat QR, makanan baru dimasak setelah dikonfirmasi 30 menit sebelum jam datang. ' : ''),
   };
@@ -2727,10 +3385,9 @@ async function eksekusiForwardPesanKeKasir({ ringkasan, urgent, pesanan_id }, ko
   }
 
   const customer = db.getCustomer(konteks.jid);
-  const operatorUtama = db.getAllOperators().find((o) => o.is_utama === 1);
 
-  if (!operatorUtama) {
-    return { sukses: false, pesan: 'Tidak ada kasir utama yang terdaftar.' };
+  if (db.getAllOperators().length === 0) {
+    return { sukses: false, pesan: 'Tidak ada kasir yang terdaftar.' };
   }
 
   const nomorBersih = konteks.jid.split('@')[0];
@@ -2745,7 +3402,7 @@ async function eksekusiForwardPesanKeKasir({ ringkasan, urgent, pesanan_id }, ko
       ? `Bot nonaktif utk nomor ini, lanjut manual ya. Ketik "selesai ${nomorBersih}" kalau sudah kelar.`
       : 'Info saja, bot tetap melayani customer ini. Kalau mau balas customer, bilang aja ke aku isinya.');
 
-  await konteks.kirimPesan(operatorUtama.jid, pesanKeKasir);
+  await kirimKeSemuaKasir(konteks, pesanKeKasir);
 
   if (urgent) {
     db.setStatusCs(konteks.jid, 'ESKALASI');
@@ -2760,9 +3417,399 @@ async function eksekusiForwardPesanKeKasir({ ringkasan, urgent, pesanan_id }, ko
   };
 }
 
+// ========== INFO RESTO, BOOKING, WAITER, OPEN BILL, RATING, KUIS ==========
+
+async function eksekusiInfoResto({ topik }, konteks) {
+  const i = config.info();
+  const t = topik || 'semua';
+  const teks = {
+    jam: `Jam buka ${i.nama_resto}:\n${config.teksJamOperasional()}`,
+    live_music: `Live music di ${i.nama_resto}:\n${config.teksLiveMusic()}`,
+    ruang_vip: `${config.teksRuangVip()}\n\nMau booking? Sebutkan tanggal, jam, dan jumlah orangnya ya.`,
+    full_booking: config.teksFullBooking(),
+    lokasi: `${i.nama_resto}\n${i.alamat}\nReservasi: ${i.telepon_reservasi} | Instagram ${i.instagram}`,
+    semua: config.teksInfoLengkap(),
+  }[t] || config.teksInfoLengkap();
+  await konteks.kirimPesan(konteks.jid, teks);
+  return {
+    sukses: true,
+    topik: t,
+    catatan_untuk_ai: 'Teks info lengkap SUDAH dikirim sistem ke customer. JANGAN mengulang isinya. Balas 1 kalimat singkat saja yang mengajak lanjut (mau booking, lihat menu, atau pesan).',
+  };
+}
+
+const NAMA_JENIS_BOOKING = { RUANG_VIP: 'RUANG VIP (Meeting Cablaka)', FULL_RESTO: 'FULL BOOKING RESTO' };
+
+async function eksekusiAjukanBooking(args, konteks) {
+  const jenis = args.jenis === 'full_resto' ? 'FULL_RESTO' : 'RUANG_VIP';
+  const c = db.getCustomer(konteks.jid);
+  const nama = String(args.nama || c.nama || '').trim().replace(/^(mas|mbak|mba|kak)\s+/i, '');
+  const kurang = [];
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(args.tanggal || ''))) kurang.push('tanggal');
+  const jamMenit = args.jam ? parseJam(args.jam) : null;
+  if (jamMenit === null) kurang.push('jam mulai');
+  if (!args.jumlah_orang) kurang.push('perkiraan jumlah orang');
+  if (!nama) kurang.push('nama pemesan');
+  if (jenis === 'RUANG_VIP' && !args.rokok) kurang.push('area smoking atau non smoking');
+  if (kurang.length > 0) {
+    return {
+      sukses: false,
+      data_kurang: kurang,
+      catatan_untuk_ai: `Data booking belum lengkap. Tanyakan SEMUA yang kurang sekaligus dalam satu pesan: ${kurang.join(', ')}. Hari ini ${tanggalBot()}. Setelah dijawab, panggil ajukan_booking lagi dengan data lengkap (gabungkan dengan yang sudah disebut).`,
+    };
+  }
+
+  if (args.tanggal < tanggalBot()) {
+    return { sukses: false, pesan: 'Tanggal sudah lewat.', catatan_untuk_ai: `Tanggal ${args.tanggal} sudah lewat (hari ini ${tanggalBot()}). Tanyakan tanggal yang benar.` };
+  }
+  const hari = new Date(`${args.tanggal}T12:00:00Z`).getUTCDay();
+  const jadwal = config.info().jam_operasional.find((j) => j.hari.includes(hari));
+  if (!jadwal || jamMenit < config.menitDariJam(jadwal.buka) || jamMenit >= config.menitDariJam(jadwal.tutup)) {
+    return { sukses: false, pesan: 'Jam di luar jam buka.', catatan_untuk_ai: `Jam itu di luar jam buka pada hari tersebut (${jadwal ? `${config.fmtJam(jadwal.buka)}-${config.fmtJam(jadwal.tutup)}` : 'tutup'}). Tanyakan jam lain.` };
+  }
+  const kapasitas = jenis === 'RUANG_VIP' ? 30 : (config.info().kapasitas_seat || 80);
+  if (Number(args.jumlah_orang) > kapasitas) {
+    return {
+      sukses: false,
+      pesan: `Melebihi kapasitas ${kapasitas}.`,
+      catatan_untuk_ai: jenis === 'RUANG_VIP'
+        ? 'Ruang VIP maksimal 30 orang. Tawarkan booking seluruh resto (80 seat) sebagai DAFTAR BERNOMOR "1. Booking seluruh resto" dan "2. Ubah jumlah orang".'
+        : 'Melebihi 80 seat, sampaikan santai dan tanya jumlah yang benar.',
+    };
+  }
+
+  const jam = formatJam(jamMenit);
+  const sama = db.getBookingAktifByCustomer(konteks.jid).find((b) => b.jenis === jenis && b.tanggal === args.tanggal && b.jam === jam);
+  if (sama) {
+    return { sukses: true, sudah_ada: true, nomor_booking: sama.id, catatan_untuk_ai: `Booking ini sudah diajukan (#${sama.id}) dan sedang diproses tim. Bilang itu, jangan ajukan ulang.` };
+  }
+
+  const rokok = args.rokok === 'smoking' ? 'SMOKING' : args.rokok === 'non_smoking' ? 'NON_SMOKING' : null;
+  const id = db.buatBooking({
+    customer_jid: konteks.jid, jenis, tanggal: args.tanggal, jam,
+    jumlah_orang: Number(args.jumlah_orang), nama, rokok, catatan: args.catatan || null,
+  });
+  if (nama && !c.nama) db.setCustomerNama(konteks.jid, nama);
+
+  const v = config.info().ruang_vip;
+  await kirimKeSemuaKasir(konteks, [
+    `📅 BOOKING #${id} | ${NAMA_JENIS_BOOKING[jenis]}`,
+    `Nama: ${nama} (WA ${konteks.jid.split('@')[0]})`,
+    `Tanggal: ${args.tanggal} jam ${jam} | ${args.jumlah_orang} orang`,
+    rokok ? `Area: ${rokok === 'SMOKING' ? 'smoking' : 'non smoking'}` : null,
+    args.catatan ? `Catatan: ${args.catatan}` : null,
+    jenis === 'RUANG_VIP' ? `Ketentuan: min spend ${rp(v.minimum_spend)}, deposit ${rp(v.deposit)} di awal.` : 'Syarat full booking dibahas langsung dengan customer.',
+    '',
+    `Balas: "booking ${id} diterima" atau "booking ${id} ditolak <alasan>"`,
+  ].filter(Boolean).join('\n'));
+
+  return {
+    sukses: true,
+    nomor_booking: id,
+    catatan_untuk_ai: `Booking #${id} sudah diteruskan ke tim dan MENUNGGU konfirmasi (ketersediaan dicek manusia, jangan menjanjikan pasti). ${jenis === 'RUANG_VIP' ? `Kalau diterima, deposit ${rp(v.deposit)} wajib dibayar di awal (QR dikirim tim).` : 'Tim akan menghubungi untuk syarat dan detailnya.'} Rangkum singkat data booking (tanggal, jam, jumlah orang) dalam 1-2 kalimat.`,
+  };
+}
+
+async function eksekusiPanggilWaiter({ keperluan }, konteks) {
+  const c = db.getCustomer(konteks.jid);
+  const meja = c.nomor_meja;
+  if (!meja) {
+    return { sukses: false, perlu_meja: true, pesan: 'Nomor meja belum ada.', catatan_untuk_ai: 'Tanyakan nomor mejanya (1 kalimat) supaya waiter tahu ke mana. Jawabannya -> konfirmasi_kedatangan, lalu panggil panggil_waiter lagi dengan keperluan yang sama.' };
+  }
+  const terakhir = db.getPendingState(konteks.jid, 'waiter');
+  if (terakhir && Date.now() - terakhir.at < 2 * 60 * 1000) {
+    return { sukses: true, sudah_dipanggil: true, catatan_untuk_ai: 'Waiter baru saja dipanggilkan (kurang dari 2 menit lalu). Bilang waiter sedang menuju meja, sebentar ya.' };
+  }
+  db.setPendingState(konteks.jid, 'waiter', { at: Date.now() });
+  await kirimKeSemuaKasir(konteks, `🔔 PANGGIL WAITER | Meja ${meja} | ${sebutCustomer(c, konteks.jid)}${keperluan ? ` | ${keperluan}` : ''}`);
+  return { sukses: true, nomor_meja: meja, catatan_untuk_ai: `Waiter sudah dipanggilkan ke meja ${meja}. Bilang 1 kalimat: sudah dipanggilkan, sebentar ya.` };
+}
+
+async function eksekusiAturCaraBayar({ cara }, konteks) {
+  const open = cara === 'open_bill';
+  const draft = db.getDraftAtauMenungguBayarByCustomer(konteks.jid);
+  const items = draft ? db.getItemsByPesananId(draft.id).filter((i) => i.status_item === 'AKTIF') : [];
+  const c = db.getCustomer(konteks.jid);
+  const preOrder = !!draft?.jam_datang && c.status_kedatangan !== 'DI_RESTO';
+  if (open && (preOrder || items.some((i) => i.tipe === 'TAKE_AWAY') || c.tipe_default === 'TAKE_AWAY')) {
+    return {
+      sukses: false,
+      pesan: 'Open bill hanya untuk makan di tempat.',
+      catatan_untuk_ai: 'Open bill hanya untuk dine in; take away dan pre-order wajib bayar dulu. Sampaikan santai 1-2 kalimat dan lanjut seperti biasa (bayar dulu).',
+    };
+  }
+  db.setCaraBayar(konteks.jid, open ? 'OPEN_BILL' : 'BAYAR_DULU');
+  return {
+    sukses: true,
+    cara: open ? 'open bill' : 'bayar dulu',
+    catatan_untuk_ai: open
+      ? 'Open bill dicatat: pesanan akan langsung masuk dapur dan dibayar di akhir (customer minta bill kapan saja). Konfirmasi 1 kalimat lalu lanjutkan alur pesanan seperti biasa (rincian, lalu kirim_qr_pembayaran setelah customer setuju).'
+      : 'Dicatat bayar dulu. Konfirmasi 1 kalimat dan lanjutkan alur.',
+  };
+}
+
+async function eksekusiMintaBill(_, konteks) {
+  const open = db.getPesananOpenBillByCustomer(konteks.jid);
+  if (open.length === 0) {
+    return { sukses: false, pesan: 'Tidak ada pesanan open bill yang belum dibayar.', catatan_untuk_ai: 'Bilang tidak ada tagihan yang menunggu (pesanan yang bayar dulu sudah lunas / belum ada pesanan). Kalau ada pesanan menunggu bayar, arahkan ke QR-nya.' };
+  }
+  const c = db.getCustomer(konteks.jid);
+  const { teks, total } = nota.teksNotaGabungan(open);
+  const meja = c.nomor_meja || open[0].nomor_meja || '-';
+
+  let permintaan = open.map((p) => db.getPermintaanQrByPesanan(p.id)).find((r) => r && r.jenis === 'BILL');
+  let statusQr;
+  if (!permintaan) {
+    permintaan = db.buatPermintaanQr({
+      jenis: 'BILL', refIds: open.map((p) => p.id), customerJid: konteks.jid,
+      label: `Bill meja ${meja}`, nominal: total.grandTotal,
+    });
+    await kirimTiketPermintaanQr(konteks, permintaan, [
+      `💳 MINTA QR | BILL (open bill) | ${sebutCustomer(c, konteks.jid)} | Meja ${meja}`,
+      teks,
+      '',
+      `Buat QRIS ${rp(total.grandTotal)} di POS, foto QR-nya, lalu kirim ke chat ini sebagai REPLY pesan ini (atau tulis "meja ${meja}" di caption).`,
+      `Kalau sudah dibayar, bilang: "meja ${meja} udah bayar" (semua pesanan open bill meja ini lunas sekaligus)`,
+    ].join('\n'));
+    statusQr = 'MENUNGGU_KASIR';
+  } else if (permintaan.status === 'TERKIRIM') {
+    statusQr = (await konteks.kirimQrKeCustomer(permintaan.id)) ? 'DIKIRIM_ULANG' : 'GAGAL';
+  } else {
+    statusQr = 'MASIH_MENUNGGU_KASIR';
+  }
+
+  const draftBaru = db.getDraftAtauMenungguBayarByCustomer(konteks.jid);
+  return {
+    sukses: true,
+    pesanan: open.map((p) => nomorPesanan(p)),
+    subtotal: total.subtotal,
+    ppn: total.ppn,
+    grand_total: total.grandTotal,
+    status_qr: statusQr,
+    ada_draft_belum_dikonfirmasi: draftBaru && draftBaru.status === 'DRAFT_MENUNGGU_KONFIRMASI' ? true : undefined,
+    catatan_untuk_ai: (statusQr === 'DIKIRIM_ULANG' ? 'QR bill sudah dikirim ulang. ' : statusQr === 'GAGAL' ? 'QR gagal terkirim, bilang kasir akan mengirimnya. ' : `Permintaan QR bill ${rp(total.grandTotal)} sudah diteruskan ke kasir; QR BELUM dikirim, kasir yang membuatnya lalu diteruskan otomatis. `)
+      + `Tampilkan ringkasan bill: pesanan ${open.map((p) => nomorPesanan(p)).join(', ')}, Subtotal ${rp(total.subtotal)}, PPN ${rp(total.ppn)}, Grand Total ${rp(total.grandTotal)} (singkat, 2-3 baris), dan bilang QR-nya lagi disiapkan kasir.`
+      + (draftBaru && draftBaru.status === 'DRAFT_MENUNGGU_KONFIRMASI' ? ' Catatan: ada pesanan baru yang belum dikonfirmasi dan TIDAK ikut dalam bill ini.' : ''),
+  };
+}
+
+// ---------- RATING ----------
+const KATA_ANGKA = { satu: 1, dua: 2, tiga: 3, empat: 4, lima: 5 };
+
+// "5", "4/5", "bintang 4", "lima bintang", "nilai 3 ya" -> 1..5, selain itu null (tidak ditebak)
+function parseRating(teks) {
+  const t = atribut.norm(teks).replace(/\b(bintang|star|stars|nilai|rating|kasih|kak|dong|deh|ya|yaa|aja|saja|dari|untuk|sih|nih|poin|point)\b/g, ' ').replace(/\s+/g, ' ').trim();
+  const m = t.match(/^([1-5])(?: ?5)?$/) || t.match(/^(satu|dua|tiga|empat|lima)$/);
+  if (!m) return null;
+  return KATA_ANGKA[m[1]] ?? Number(m[1]);
+}
+
+function terapkanRating(jid, nilai) {
+  const k = db.getKunjunganRating(jid);
+  if (!k) return null;
+  const c = db.getCustomer(jid);
+  const sapa = sebutCustomer(c, jid);
+  if (nilai >= 3) {
+    db.updateKunjungan(k.id, { rating: nilai, status: 'SELESAI' });
+    return `Makasih banyak ${sapa} 🙏 Sampai ketemu lagi di The Banjoemas ya!`;
+  }
+  db.updateKunjungan(k.id, { rating: nilai, status: 'MENUNGGU_ALASAN' });
+  return `Maaf banget ya ${sapa}, kami belum bisa bikin kunjunganmu nyaman 🙏 Boleh cerita singkat, kendalanya apa tadi?`;
+}
+
+async function terapkanAlasanRating(jid, teks, konteks) {
+  const k = db.getKunjunganRating(jid);
+  if (!k) return null;
+  db.updateKunjungan(k.id, { alasan: String(teks).slice(0, 500), status: 'SELESAI' });
+  const c = db.getCustomer(jid);
+  await kirimKeSemuaKasir(konteks, `⚠️ RATING RENDAH ${k.rating}/5 | ${sebutCustomer(c, jid)} | Meja ${k.nomor_meja || '-'} | WA ${jid.split('@')[0]}\nKendala: ${String(teks).slice(0, 500)}`);
+  return 'Makasih masukannya ya, udah kami sampaikan ke tim. Sekali lagi maaf, semoga lain kali lebih nyaman 🙏';
+}
+
+async function eksekusiCatatRating({ nilai }, konteks) {
+  const n = Number(nilai);
+  if (!(n >= 1 && n <= 5)) return { sukses: false, pesan: 'Nilai harus 1 sampai 5.' };
+  const k = db.getKunjunganRating(konteks.jid);
+  if (!k || k.status !== 'MENUNGGU_RATING') return { sukses: false, pesan: 'Tidak sedang menunggu rating.' };
+  const balasan = terapkanRating(konteks.jid, Math.round(n));
+  return { sukses: true, nilai: n, catatan_untuk_ai: `Balas persis dengan kalimat ini (jangan diubah): ${balasan}` };
+}
+
+// ---------- KUIS BANYUMASAN ----------
+function teksSoalKuis(state) {
+  const soal = config.kuis().soal[state.soal[state.i]];
+  return [
+    `Soal ${state.i + 1}/${state.soal.length}: ${soal.pertanyaan}`,
+    ...soal.opsi.map((o, n) => `${n + 1}. ${o}`),
+  ].join('\n');
+}
+
+function mulaiKuisState(jid) {
+  const bank = config.kuis();
+  const idx = bank.soal.map((_, i) => i).sort(() => Math.random() - 0.5).slice(0, bank.soal_per_ronde || 5);
+  const state = { soal: idx, i: 0, skor: 0 };
+  db.setPendingState(jid, 'kuis', state);
+  db.clearPendingState(jid, 'kuis_tawaran');
+  return `Kuis Banyumasan, ${idx.length} soal. Balas dengan nomor jawabannya, atau ketik "stop" kalau udah cukup.\n\n${teksSoalKuis(state)}`;
+}
+
+async function eksekusiMulaiKuis(_, konteks) {
+  if (config.kuis().soal.length === 0) return { sukses: false, pesan: 'Belum ada soal kuis.', catatan_untuk_ai: 'Bilang kuisnya belum tersedia, santai.' };
+  db.setPendingState(konteks.jid, 'tambahan_balasan', mulaiKuisState(konteks.jid));
+  return { sukses: true, catatan_untuk_ai: 'Soal pertama dikirim sistem sebagai pesan terpisah setelah balasanmu. Balas 1 kalimat singkat yang menyemangati (jangan sebut soalnya).' };
+}
+
+const KATA_BERHENTI_KUIS = /\b(stop|udah|sudah|cukup|berhenti|nggak mau|gak mau|ga mau|males|skip|batal)\b/i;
+const KATA_MAU = /^(kuis|mau|iya|ya|yaa|yuk|ayo|gas|boleh|oke|ok|siap|sip|main|mau dong|boleh dong|ayo dong|yuk main|mau main)( dong| deh| aja| ya)?$/i;
+
+// Jawaban kuis hanya ditangkap kalau pesan bot sebelumnya memang soal kuis / tawaran kuis (supaya "2" untuk daftar pilihan lain tidak salah tangkap)
+function pesanBotTerakhir(jid) {
+  const h = db.getChatHistory(jid, 1)[0];
+  return h && h.role === 'assistant' ? h.content : '';
+}
+
+// Hasil: teks balasan (kode yang menjawab, AI tidak dipanggil) atau null (serahkan ke AI)
+async function tangkapRatingDanKuis(jid, teks, konteks) {
+  const t = String(teks || '').trim();
+
+  // 1. Rating
+  const k = db.getKunjunganRating(jid);
+  if (k) {
+    const lewat = k.selesai_at && Date.now() - new Date(k.selesai_at).getTime() > 2 * 3600 * 1000;
+    if (lewat) {
+      db.updateKunjungan(k.id, { status: 'SELESAI' });
+    } else if (k.status === 'MENUNGGU_ALASAN') {
+      if (t.length >= 2) return terapkanAlasanRating(jid, t, konteks);
+    } else {
+      const nilai = parseRating(t);
+      if (nilai) return terapkanRating(jid, nilai);
+      if (t.length > 30) db.updateKunjungan(k.id, { status: 'SELESAI' }); // pesan panjang = topik lain, rating dilewati
+    }
+  }
+
+  // 2. Kuis
+  const terakhir = pesanBotTerakhir(jid);
+  const state = db.getPendingState(jid, 'kuis');
+  if (state && /^Soal \d+\/\d+:/m.test(terakhir)) {
+    if (KATA_BERHENTI_KUIS.test(t) && t.length <= 30) {
+      db.clearPendingState(jid, 'kuis');
+      return `Siap, kuisnya disudahi. Skor sementara kamu ${state.skor}/${state.i}. Seru juga ya 😄`;
+    }
+    const soal = config.kuis().soal[state.soal[state.i]];
+    const norm = atribut.norm(t);
+    let pilih = null;
+    const angka = norm.match(/^(?:nomor |no |jawab |pilih )?([1-9])$/);
+    if (angka) pilih = Number(angka[1]);
+    else {
+      const huruf = norm.match(/^(?:jawab |pilih )?([a-d])$/);
+      if (huruf) pilih = huruf[1].charCodeAt(0) - 96;
+      else {
+        const idx = soal.opsi.findIndex((o) => atribut.norm(o) === norm);
+        if (idx >= 0) pilih = idx + 1;
+      }
+    }
+    if (!pilih || pilih > soal.opsi.length) {
+      if (t.length <= 20) return `Jawab pakai nomor pilihannya ya (1 sampai ${soal.opsi.length}), atau ketik "stop" kalau udah cukup 🙂`;
+      return null; // pesan panjang = topik lain
+    }
+    const benar = pilih === soal.jawaban;
+    const skor = state.skor + (benar ? 1 : 0);
+    const umpan = benar ? `Benar! ${soal.info || ''}` : `Belum tepat. ${soal.info || ''}`;
+    if (state.i + 1 >= state.soal.length) {
+      db.clearPendingState(jid, 'kuis');
+      return `${umpan}\n\nSelesai! Skor kamu ${skor}/${state.soal.length}. Matur nuwun udah main 😄`;
+    }
+    const baru = { ...state, i: state.i + 1, skor };
+    db.setPendingState(jid, 'kuis', baru);
+    return `${umpan}\n\n${teksSoalKuis(baru)}`;
+  }
+  if (state && !/^Soal \d+\/\d+:/m.test(terakhir) && KATA_BERHENTI_KUIS.test(t) && /\bkuis\b/i.test(t)) {
+    db.clearPendingState(jid, 'kuis');
+    return 'Siap, kuisnya disudahi 😄';
+  }
+
+  // 3. Jawaban atas tawaran kuis
+  if (db.getPendingState(jid, 'kuis_tawaran') && /kuis Banyumasan/i.test(terakhir)) {
+    if (KATA_MAU.test(atribut.norm(t)) && config.kuis().soal.length > 0) return mulaiKuisState(jid);
+    if (/^(nggak|gak|ga|enggak|tidak|nanti|skip|males|belum)\b/i.test(t)) {
+      db.clearPendingState(jid, 'kuis_tawaran');
+      return 'Oke, kalau berubah pikiran tinggal bilang "kuis" ya 🙂';
+    }
+  }
+  return null;
+}
+
+// ---------- OPERATOR: BOOKING ----------
+async function eksekusiKonfirmasiBooking({ nomor_booking, aksi, alasan }, konteks) {
+  const b = db.getBooking(nomor_booking);
+  if (!b) return { sukses: false, pesan: `Booking #${nomor_booking} tidak ditemukan.` };
+  if (b.status !== 'MENUNGGU_KONFIRMASI') return { sukses: false, pesan: `Booking #${b.id} statusnya ${b.status}, bukan menunggu konfirmasi.` };
+  const c = db.getCustomer(b.customer_jid);
+  const sapa = sebutCustomer(c, b.customer_jid);
+  const ringkas = `${NAMA_JENIS_BOOKING[b.jenis]} tanggal ${b.tanggal} jam ${b.jam} untuk ${b.jumlah_orang} orang`;
+
+  if (aksi === 'tolak') {
+    db.setStatusBooking(b.id, 'DITOLAK');
+    const pesan = `Maaf ${sapa}, booking ${ringkas} belum bisa kami terima${alasan ? `: ${alasan}` : ''}. Boleh pilih tanggal atau jam lain? 🙏`;
+    await konteks.kirimPesan(b.customer_jid, pesan);
+    db.simpanChatHistory(b.customer_jid, 'assistant', pesan);
+    return { sukses: true, nomor_booking: b.id, status: 'ditolak', customer_dikabari: true };
+  }
+
+  const deposit = b.jenis === 'RUANG_VIP' ? Number(config.info().ruang_vip?.deposit || 0) : 0;
+  if (deposit > 0) {
+    db.setStatusBooking(b.id, 'MENUNGGU_DEPOSIT');
+    const permintaan = db.buatPermintaanQr({
+      jenis: 'DEPOSIT', refIds: [b.id], customerJid: b.customer_jid,
+      label: `deposit booking #${b.id}`, nominal: deposit,
+    });
+    await kirimTiketPermintaanQr(konteks, permintaan, [
+      `💳 MINTA QR DEPOSIT | Booking #${b.id} | ${sapa} | ${ringkas}`,
+      `Deposit: ${rp(deposit)} (wajib dibayar di awal)`,
+      '',
+      `Buat QRIS ${rp(deposit)} di POS, foto QR-nya, lalu kirim ke chat ini sebagai REPLY pesan ini (atau tulis "booking ${b.id}" di caption).`,
+      `Kalau sudah masuk, bilang: "deposit booking ${b.id} sudah masuk"`,
+    ].join('\n'));
+    const pesan = `Kabar baik ${sapa}, booking ${ringkas} diterima 🎉 Untuk mengunci, deposit ${rp(deposit)} dibayar di awal (dihitung sebagai bagian dari minimum spend). QR-nya lagi disiapkan kasir, sebentar ya.${alasan ? `\nCatatan tim: ${alasan}` : ''}`;
+    await konteks.kirimPesan(b.customer_jid, pesan);
+    db.simpanChatHistory(b.customer_jid, 'assistant', pesan);
+    return { sukses: true, nomor_booking: b.id, status: 'diterima, menunggu deposit', customer_dikabari: true };
+  }
+
+  db.setStatusBooking(b.id, 'DIKONFIRMASI');
+  const pesan = `Kabar baik ${sapa}, booking ${ringkas} dikonfirmasi 🎉${alasan ? ` ${alasan}` : ' Tim kami akan menghubungi untuk detail selanjutnya.'}`;
+  await konteks.kirimPesan(b.customer_jid, pesan);
+  db.simpanChatHistory(b.customer_jid, 'assistant', pesan);
+  return { sukses: true, nomor_booking: b.id, status: 'dikonfirmasi', customer_dikabari: true };
+}
+
+async function eksekusiKonfirmasiDepositBooking({ nomor_booking }, konteks) {
+  const b = db.getBooking(nomor_booking);
+  if (!b) return { sukses: false, pesan: `Booking #${nomor_booking} tidak ditemukan.` };
+  if (b.status !== 'MENUNGGU_DEPOSIT') return { sukses: false, pesan: `Booking #${b.id} statusnya ${b.status}, bukan menunggu deposit.` };
+  const deposit = Number(config.info().ruang_vip?.deposit || 0);
+  db.setStatusBooking(b.id, 'DIKONFIRMASI', deposit);
+  const perm = db.getPermintaanQrByRef('DEPOSIT', b.id);
+  if (perm) db.setPermintaanQrLunas(perm.id);
+  const sapa = sebutCustomer(db.getCustomer(b.customer_jid), b.customer_jid);
+  const pesan = `Makasih ${sapa}, deposit ${rp(deposit)} udah masuk. Booking ${NAMA_JENIS_BOOKING[b.jenis]} tanggal ${b.tanggal} jam ${b.jam} resmi terkunci ✅ Sampai ketemu!`;
+  await konteks.kirimPesan(b.customer_jid, pesan);
+  db.simpanChatHistory(b.customer_jid, 'assistant', pesan);
+  return { sukses: true, nomor_booking: b.id, deposit, customer_dikabari: true };
+}
+
 const EKSEKUTOR_CUSTOMER = {
+  info_resto: eksekusiInfoResto,
+  ajukan_booking: eksekusiAjukanBooking,
+  panggil_waiter: eksekusiPanggilWaiter,
+  atur_cara_bayar: eksekusiAturCaraBayar,
+  minta_bill: eksekusiMintaBill,
+  catat_rating: eksekusiCatatRating,
+  mulai_kuis: eksekusiMulaiKuis,
   lihat_menu: eksekusiLihatMenu,
   tanya_detail_menu: eksekusiTanyaDetailMenu,
+  cari_menu_atribut: eksekusiCariMenuAtribut,
   buat_order: eksekusiBuatOrder,
   jawab_klarifikasi_menu: eksekusiJawabKlarifikasiMenu,
   jawab_pilihan_menu: eksekusiJawabPilihanMenu,
@@ -2799,9 +3846,33 @@ async function cariPesananUntukKonfirmasi({ pesanan_id, nomor_meja, nomor_pesana
   }
   if (nomor_meja) {
     const meja = db.normalisasiMeja(nomor_meja);
-    return db.getPesananMenungguBayar().filter((p) => db.normalisasiMeja(p.nomor_meja) === meja || db.normalisasiMeja(p.nomor_meja_customer) === meja);
+    return db.getPesananBelumLunas().filter((p) => db.normalisasiMeja(p.nomor_meja) === meja || db.normalisasiMeja(p.nomor_meja_customer) === meja);
   }
-  return db.getPesananMenungguBayar();
+  return db.getPesananBelumLunas();
+}
+
+// Open bill dilunasi sekaligus: semua pesanan OPEN_BILL satu customer. Dapur sudah dapat tiketnya, jadi tidak ada tiket baru.
+async function lunasiOpenBill(pesananList, konteks) {
+  const jid = pesananList[0].customer_jid;
+  const customer = db.getCustomer(jid);
+  const { total } = nota.teksNotaGabungan(pesananList);
+  for (const p of pesananList) {
+    db.setPesananLunas(p.id);
+    const perm = db.getPermintaanQrByPesanan(p.id);
+    if (perm) db.setPermintaanQrLunas(perm.id);
+  }
+  const sapa = customer.nama ? [customer.sapaan, customer.nama].filter(Boolean).join(' ') : 'Mas/Mbak';
+  const pesan = `Makasih ${sapa}, pembayaran bill-nya udah masuk (${pesananList.map((p) => nomorPesanan(p)).join(', ')}, total ${rp(total.grandTotal)}) 🙏`;
+  await konteks.kirimPesan(jid, pesan);
+  db.simpanChatHistory(jid, 'assistant', pesan);
+  return {
+    sukses: true,
+    open_bill_lunas: true,
+    customer: customer.nama,
+    pesanan: pesananList.map((p) => nomorPesanan(p)),
+    total: total.grandTotal,
+    catatan_untuk_ai: 'Bill open bill customer ini sudah lunas dan customer sudah dikabari. Kalau kasir juga mau mengosongkan meja, bilang "meja X kosong".',
+  };
 }
 
 async function eksekusiKonfirmasiBayar({ pesanan_id, nomor_meja, nomor_pesanan }, konteks) {
@@ -2811,21 +3882,32 @@ async function eksekusiKonfirmasiBayar({ pesanan_id, nomor_meja, nomor_pesanan }
     return { sukses: false, pesan: 'Tidak ketemu pesanan yang sedang menunggu bayar untuk itu.' };
   }
 
+  // Beberapa pesanan open bill milik satu customer = satu bill, dilunasi sekaligus
+  const semuaOpenBill = kandidat.every((p) => p.status === 'OPEN_BILL' || (p.metode_bayar === 'OPEN_BILL' && p.status === 'MENUNGGU_BAYAR'));
+  if (kandidat.length > 1 && semuaOpenBill && new Set(kandidat.map((p) => p.customer_jid)).size === 1) {
+    return lunasiOpenBill(kandidat, konteks);
+  }
+
   if (kandidat.length > 1) {
     return {
       sukses: false,
       ada_banyak_kandidat: true,
-      daftar: kandidat.map((p) => ({ nomor_pesanan: nomorPesanan(p), meja: p.nomor_meja, nama: p.nama })),
-      catatan_untuk_ai: 'Ada lebih dari 1 pesanan menunggu bayar yang cocok, tanya balik pesanan mana (format angka, sebut nomor pesanan) sebelum konfirmasi.',
+      daftar: kandidat.map((p) => ({ nomor_pesanan: nomorPesanan(p), meja: p.nomor_meja, nama: p.nama, status: p.status === 'OPEN_BILL' ? 'open bill' : 'menunggu bayar' })),
+      catatan_untuk_ai: 'Ada lebih dari 1 pesanan belum lunas yang cocok, tanya balik pesanan mana (format angka, sebut nomor pesanan) sebelum konfirmasi.',
     };
   }
 
   const pesanan = kandidat[0];
+  if (pesanan.status === 'OPEN_BILL') {
+    return lunasiOpenBill([pesanan], konteks);
+  }
   if (pesanan.status !== 'MENUNGGU_BAYAR') {
     return { sukses: false, pesan: `Pesanan ${nomorPesanan(pesanan)} statusnya "${pesanan.status}", bukan sedang menunggu bayar.` };
   }
 
   db.setPesananLunas(pesanan.id);
+  const permBayar = db.getPermintaanQrByPesanan(pesanan.id);
+  if (permBayar) db.setPermintaanQrLunas(permBayar.id);
 
   const customer = db.getCustomer(pesanan.customer_jid);
   const items = db.getItemsByPesananId(pesanan.id);
@@ -2854,6 +3936,16 @@ async function eksekusiKonfirmasiBayar({ pesanan_id, nomor_meja, nomor_pesanan }
   }
   await konteks.kirimPesan(customer.jid, pesanDapur);
   db.simpanChatHistory(customer.jid, 'assistant', pesanDapur);
+
+  // Kunjungan dimulai (dasar timer 3 jam & rating) begitu customer yang sudah di resto membayar. Lalu tawaran kuis sekali.
+  if (!preOrder) {
+    db.mulaiKunjungan(customer.jid, pesanan.nomor_meja || customer.nomor_meja);
+    const kuisMsg = tawaranKuisSekali(customer.jid);
+    if (kuisMsg) {
+      await konteks.kirimPesan(customer.jid, kuisMsg);
+      db.simpanChatHistory(customer.jid, 'assistant', kuisMsg);
+    }
+  }
 
   // Tiket ke staf (semua operator kecuali yang baru konfirmasi)
   await kirimTiketPesananKeStaf(konteks, db.getPesananById(pesanan.id), items, { mode });
@@ -3007,12 +4099,18 @@ async function eksekusiKirimUlangQr({ pesanan_id, nomor_pesanan }, konteks) {
   const idDicari = resolvePesananId({ pesanan_id, nomor_pesanan });
   const pesanan = idDicari ? db.getPesananById(idDicari) : null;
   if (!pesanan) return { sukses: false, pesan: 'Pesanan tidak ditemukan (sebut nomor pesanan hari ini).' };
-  if (pesanan.status !== 'MENUNGGU_BAYAR') {
+  if (!['MENUNGGU_BAYAR', 'OPEN_BILL'].includes(pesanan.status)) {
     return { sukses: false, pesan: `Pesanan ${nomorPesanan(pesanan)} statusnya "${pesanan.status}", bukan menunggu bayar.` };
   }
-  const nominal = pesanan.nominal_transfer || pesanan.subtotal;
-  const hasilKirim = await konteks.kirimQrKeCustomer(pesanan.id, nominal);
-  return { sukses: hasilKirim !== false, pesanan_id: pesanan.id, nominal_transfer: nominal };
+  const permintaan = db.getPermintaanQrByPesanan(pesanan.id);
+  if (!permintaan) {
+    return { sukses: false, pesan: `Pesanan ${nomorPesanan(pesanan)} belum punya permintaan QR${pesanan.status === 'OPEN_BILL' ? ' (open bill baru ditagih setelah customer minta bill)' : ''}.` };
+  }
+  if (permintaan.status !== 'TERKIRIM') {
+    return { sukses: false, pesan: `QR ${permintaan.label} belum pernah dikirim ke customer. Kirim foto QR-nya ke chat ini sebagai reply tiket MINTA QR.` };
+  }
+  const hasilKirim = await konteks.kirimQrKeCustomer(permintaan.id);
+  return { sukses: hasilKirim !== false, pesanan_id: pesanan.id, nominal_transfer: permintaan.nominal };
 }
 
 async function eksekusiUpdateStatusMenu({ teks_mentah }) {
@@ -3169,16 +4267,34 @@ async function eksekusiHapusOperator({ nomor }, konteks) {
   return { sukses: berhasil, pesan: berhasil ? `${nomorBersih} dihapus dari daftar operator.` : `${nomorBersih} tidak ditemukan sebagai operator.` };
 }
 
-async function eksekusiSelesaikanMeja({ nomor_meja, paksa }) {
+// Setelah meja kosong: tanya SATU pertanyaan rating (1-5). Rating di bawah 3 -> ditanya kendalanya (lihat tangkapRatingDanKuis).
+async function mintaRating(konteks, jid) {
+  const k = db.getKunjunganAktif(jid);
+  if (!k) return false;
+  db.updateKunjungan(k.id, { status: 'MENUNGGU_RATING', selesai_at: new Date().toISOString() });
+  const c = db.getCustomer(jid);
+  const pesan = `Makasih udah mampir ke The Banjoemas${c.nama ? `, ${sebutCustomer(c, jid)}` : ''} 🙏 Boleh kasih nilai pelayanan kami dari 1 sampai 5? (5 = puas banget)`;
+  await konteks.kirimPesan(jid, pesan);
+  db.simpanChatHistory(jid, 'assistant', pesan);
+  return true;
+}
+
+async function eksekusiSelesaikanMeja({ nomor_meja, paksa }, konteks) {
   const meja = db.normalisasiMeja(nomor_meja);
   const penghuni = db.getCustomerDiMeja(meja);
-  if (penghuni.length === 0) {
+  const jidKunjungan = db.getKunjunganAktifByMeja(meja).map((k) => k.customer_jid);
+  if (penghuni.length === 0 && jidKunjungan.length === 0) {
     return { sukses: false, pesan: `Meja ${meja} memang sedang kosong (tidak ada customer tercatat di meja itu).` };
   }
+  // Customer yang tercatat di kunjungan tapi statusnya bukan lagi DI_RESTO tetap ikut (supaya rating tetap ditanyakan)
+  for (const jid of jidKunjungan) if (!penghuni.some((c) => c.jid === jid)) penghuni.push(db.getCustomer(jid));
 
   // Jangan kosongkan meja yang masih punya tagihan berjalan, kecuali kasir paksa
   const belumBayar = [];
   for (const c of penghuni) {
+    for (const ob of db.getPesananOpenBillByCustomer(c.jid)) {
+      belumBayar.push({ pesanan: nomorPesanan(ob), nama: c.nama || c.jid.split('@')[0], nominal: ob.grand_total, ket: 'open bill belum dibayar' });
+    }
     const p = db.getDraftAtauMenungguBayarByCustomer(c.jid);
     if (p && p.status === 'MENUNGGU_BAYAR') belumBayar.push({ pesanan_id: p.id, nama: c.nama || c.jid.split('@')[0], nominal: p.nominal_transfer });
     const t = db.getTagihanBelumLunasByCustomer(c.jid);
@@ -3199,18 +4315,29 @@ async function eksekusiSelesaikanMeja({ nomor_meja, paksa }) {
     if (p) db.setStatusPesanan(p.id, 'DIBATALKAN');
     clearKlarifikasiPending(c.jid);
     clearPilihanPending(c.jid);
+    db.clearPendingState(c.jid, 'kuis');
+    db.clearPendingState(c.jid, 'kuis_tawaran');
     db.kosongkanMejaCustomer(c.jid);
+  }
+
+  // Rating pelayanan ke customer yang baru ditinggalkan mejanya
+  let ratingDitanya = 0;
+  for (const c of penghuni) {
+    try { if (await mintaRating(konteks, c.jid)) ratingDitanya++; } catch (err) { console.error('❌ Gagal minta rating:', err.message); }
   }
 
   return {
     sukses: true,
     nomor_meja: meja,
     customer: penghuni.map((c) => c.nama || c.jid.split('@')[0]),
-    catatan_untuk_ai: `Meja ${meja} sudah kosong dan bisa dipakai lagi. Konfirmasi singkat ke kasir.`,
+    rating_ditanyakan: ratingDitanya,
+    catatan_untuk_ai: `Meja ${meja} sudah kosong dan bisa dipakai lagi${ratingDitanya ? ', dan customer sudah ditanya rating pelayanan' : ''}. Konfirmasi singkat ke kasir.`,
   };
 }
 
 const EKSEKUTOR_OPERATOR = {
+  konfirmasi_booking: eksekusiKonfirmasiBooking,
+  konfirmasi_deposit_booking: eksekusiKonfirmasiDepositBooking,
   selesaikan_meja: eksekusiSelesaikanMeja,
   konfirmasi_bayar: eksekusiKonfirmasiBayar,
   batalkan_order_paksa: eksekusiBatalkanOrderPaksa,
@@ -3236,7 +4363,8 @@ module.exports = {
   TOOLS_CUSTOMER, TOOLS_OPERATOR,
   SYSTEM_PROMPT_CUSTOMER, SYSTEM_PROMPT_OPERATOR,
   jalankanAgent,
-  tangkapJawabanSapaan, rapikanBalasanCustomer, klaimTanpaBukti,
+  tangkapRatingDanKuis, kirimKeSemuaKasir, kirimTiketPermintaanQr, kelompokDariPesan, mintaMenuLengkap, kelompokDariFrasa, mintaRating, sebutCustomer,
+  tangkapJawabanSapaan, tangkapJawabanKedatangan, pesanMenyetujuiQr, pesanMengonfirmasiKedatangan, rapikanBalasanCustomer, klaimTanpaBukti, kategoriDariPesan, praRouterCustomer,
   EKSEKUTOR_CUSTOMER, EKSEKUTOR_OPERATOR,
   setKlarifikasiPending, getKlarifikasiPending, clearKlarifikasiPending,
   setPilihanPending, getPilihanPending, clearPilihanPending,
