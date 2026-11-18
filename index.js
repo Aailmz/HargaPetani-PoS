@@ -129,12 +129,19 @@ async function startBot() {
     ).trim();
 
     try {
+      // Foto dari kasir SELALU diproses sebagai foto QR, juga kalau ada caption ("pesanan 1 nih qr-nya").
+      // (Sebelumnya foto bercaption dianggap pesan teks biasa, jadi fotonya tidak pernah diteruskan.)
+      if (isi.imageMessage && db.isOperator(sender)) {
+        console.log(`\n📎 foto dari kasir ${sender}${text ? ` (caption: "${text}")` : ''}`);
+        await handleOperatorMedia(sender, message, isi);
+        return;
+      }
+
       if (!text) {
         const media = deteksiJenisMedia(isi);
         if (media) {
           console.log(`\n📎 ${media} masuk dari ${sender}`);
-          if (db.isOperator(sender) && isi.imageMessage) await handleOperatorMedia(sender, message, isi);
-          else await handlePesanNonTeks(sender, media);
+          await handlePesanNonTeks(sender, media);
         }
         // reaksi, protokol, dll: diabaikan diam-diam
         return;
@@ -202,30 +209,37 @@ async function kirimKartuMenu(jid, menu) {
 // Kartu per-MENU (data_menu/kartu) tetap dipakai untuk menu spesifik. Kumpulan menu (kategori / kelompok / semua)
 // dikirim sebagai halaman buku menu (data_menu/halaman_menu/pNN.jpg, dibuat oleh ekspor_menu.py),
 // dipetakan lewat data_menu/halaman_menu.json. Halaman yang sudah dikirim tidak dikirim ulang dalam satu kunjungan.
-const FILE_HALAMAN = path.join(DATA_MENU_DIR, 'halaman_menu.json');
+const FILE_HALAMAN = () => config.jalurData('halaman_menu.json');
 const DIR_HALAMAN = path.join(DATA_MENU_DIR, 'halaman_menu');
 
 function petaHalaman() {
-  try { return JSON.parse(fs.readFileSync(FILE_HALAMAN, 'utf8')); } catch { return null; }
+  try { return JSON.parse(fs.readFileSync(FILE_HALAMAN(), 'utf8')); } catch { return null; }
 }
 
 const fileHalaman = (n) => path.join(DIR_HALAMAN, `p${String(n).padStart(2, '0')}.jpg`);
 
-// Kirim daftar halaman (nomor), melewati yang sudah terkirim. Mengembalikan { terkirim, dilewati } (jumlah)
-async function kirimHalamanMenu(jid, daftarHalaman, { paksa = false } = {}) {
+// Halaman yang BARU SAJA dikirim (beberapa detik) tidak dikirim dobel dalam satu permintaan (misal gorengan + rebusan
+// sama-sama di halaman 3). Permintaan baru dari customer selalu dikirim lagi, supaya dia tidak perlu scroll ke atas.
+const JENDELA_DOBEL_MS = 30 * 1000;
+const halamanBaruTerkirim = new Map(); // jid -> Map(nomor -> waktu)
+
+// Kirim daftar halaman (nomor). Caption hanya kalau diisi di halaman_menu.json (kosong = tanpa caption).
+async function kirimHalamanMenu(jid, daftarHalaman) {
   const peta = petaHalaman();
-  const sudah = new Set(db.getPendingState(jid, 'halaman_terkirim') || []);
+  const riwayat = halamanBaruTerkirim.get(jid) || new Map();
+  const sekarang = Date.now();
+  for (const [n, t] of riwayat) if (sekarang - t > JENDELA_DOBEL_MS) riwayat.delete(n);
+  halamanBaruTerkirim.set(jid, riwayat);
+
   let terkirim = 0; let dilewati = 0; let adaFile = false;
-  const keluar = [];
   for (const n of daftarHalaman) {
     if (!fs.existsSync(fileHalaman(n))) continue;
     adaFile = true;
-    if (!paksa && sudah.has(n)) { dilewati++; continue; }
-    const caption = (peta?.caption_halaman?.[String(n)]) || (terkirim === 0 ? peta?.caption_umum : undefined) || undefined;
+    if (riwayat.has(n)) { dilewati++; continue; }
+    const caption = peta?.caption_halaman?.[String(n)] || undefined;
     const ok = await kirimGambarJikaAda(jid, fileHalaman(n), caption);
-    if (ok) { terkirim++; keluar.push(n); await tunggu(400); }
+    if (ok) { terkirim++; riwayat.set(n, Date.now()); await tunggu(400); }
   }
-  if (keluar.length > 0) db.setPendingState(jid, 'halaman_terkirim', [...sudah, ...keluar]);
   return { terkirim, dilewati, adaFile };
 }
 
@@ -254,7 +268,8 @@ async function kirimKartuKategori(jid, kategori) {
 async function kirimSemuaKartuKategori(jid) {
   const peta = petaHalaman();
   if (peta?.buku_menu?.length) {
-    const hasil = await kirimHalamanMenu(jid, peta.buku_menu, { paksa: true });
+    halamanBaruTerkirim.delete(jid); // minta menu lengkap = kirim semuanya
+    const hasil = await kirimHalamanMenu(jid, peta.buku_menu);
     if (hasil.adaFile) return true;
   }
   console.log('⚠️  Halaman buku menu belum ada, jalankan: python ekspor_menu.py');
@@ -343,9 +358,10 @@ async function handleCustomerMessage(jid, text) {
 // kirimSapaan=true dipakai kalau pesan pertama bukan teks (agent tidak jalan), jadi sapaan dikirim di sini.
 async function prosesSambutanCustomerBaru(jid, { kirimSapaan = false } = {}) {
   db.registerCustomer(jid);
+  db.setLayanan(jid, { rencana: 'SEKARANG' }); // chat pertama = sudah duduk di meja (default), tidak perlu ditanya
 
   if (kirimSapaan) {
-    const sapaan = `Sugeng rawuh di The Banjoemas Resto & Cafe, Mas/Mbak. Aku ${config.namaAi()} 🙏\nSudah di resto, atau mau datang nanti?\n1. Sudah di resto\n2. Datang nanti (sebutkan jamnya, misal 19.30)`;
+    const sapaan = `Sugeng rawuh di The Banjoemas Resto & Cafe, Mas/Mbak. Aku ${config.namaAi()} 🙏 Mau lihat menu dulu, atau langsung pesan?`;
     await kirimPesan(jid, sapaan);
     db.simpanChatHistory(jid, 'assistant', sapaan);
   }
@@ -362,6 +378,11 @@ async function routeCustomerTerdaftar(jid, text) {
 
   const historiChat = db.getChatHistory(jid);
   const konteks = buatKonteksUntukAgent(jid);
+
+  // Default: customer sudah di resto. Kunjungan baru (state direset) tidak perlu ditanya lagi "di mana".
+  // Kalau dia bilang akan datang jam sekian, AI mengubahnya lewat atur_layanan.
+  db.getAlur(jid); // reset state kemarin dulu
+  if (!db.getCustomer(jid).rencana_datang) db.setLayanan(jid, { rencana: 'SEKARANG' });
 
   // Rating pelayanan dan kuis dijawab KODE (angka "1-5" / nomor pilihan kuis), tanpa AI
   const cepat = await agent.tangkapRatingDanKuis(jid, text, konteks);
