@@ -1,0 +1,13 @@
+# rahasia dan state lokal
+.env
+auth_session/
+node_modules/
+
+# database SQLite (ada di VPS, bukan di repo)
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# foto QR yang dikirim kasir ke bot
+images/qr_masuk/
