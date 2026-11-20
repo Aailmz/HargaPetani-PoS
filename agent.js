@@ -651,6 +651,32 @@ const TOOLS_CUSTOMER_SEMUA = [
   {
     type: 'function',
     function: {
+      name: 'hitung_perkiraan_bujet',
+      description: 'Hitung perkiraan total (harga menu + PPN) dan per orang untuk kombinasi menu yang sedang dikonsultasikan, TANPA membuat pesanan. Dipakai saat customer tanya bujet/perkiraan biaya/patungan ("kira-kira habis berapa buat 6 orang?"). Isi daftar menu + jumlah dari saran yang kamu berikan. Hasilnya angka resmi dari data harga, jangan dihitung sendiri.',
+      parameters: {
+        type: 'object',
+        properties: {
+          item: {
+            type: 'array',
+            description: 'Daftar menu dan jumlahnya.',
+            items: {
+              type: 'object',
+              properties: {
+                nama: { type: 'string', description: 'Nama menu (persis atau mendekati nama resmi).' },
+                qty: { type: 'integer', description: 'Jumlah porsi.' },
+              },
+              required: ['nama', 'qty'],
+            },
+          },
+          jumlah_orang: { type: 'integer', description: 'Jumlah orang untuk hitung per orang (opsional).' },
+        },
+        required: ['item'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'rekomendasi_menu',
       description: 'Ambil menu andalan/favorit yang tersedia. Dipakai kalau customer tanya favorit, rekomendasi, best seller, "enaknya apa", atau "andalannya apa". Tampilkan hasilnya sebagai daftar bernomor + harga, lalu tanya mau yang mana.',
       parameters: {
@@ -1103,6 +1129,7 @@ PAHAMI KETIKAN ANEH (PENTING):
 - Kalau customer menyebut "nasi" saat membahas lauk (tongseng, sop, iga, dll), artinya Nasi Putih: tulis "nasi putih" di buat_order.
 
 IDENTITAS & NUANSA:
+- Namamu Cimendo. Customer boleh menulis "Ci Mendo", "ci mendo", atau "cimendo": semuanya kamu. Kalau ditanya siapa kamu, jawab "Cimendo" saja, jangan menyebut dirimu bot, AI, atau sistem.
 - Resto ini kental nuansa Jawa (Banyumasan). Kamu boleh sesekali pakai sapaan/kata khas Jawa secukupnya -- "sugeng rawuh" (selamat datang) di SAPAAN PERTAMA customer baru, lalu sesekali selingi "monggo", "nggih", "matur nuwun" di tempat yang pas. JANGAN dipaksakan di setiap kalimat, cukup jadi bumbu biar kerasa khasnya, selebihnya bahasa Indonesia santai normal.
 - Sapaan: kalau "Sapaan customer" sudah tertulis di STATE SAAT INI, pakai itu persis ("Mas Budi" / "Mbak Sari"), JANGAN menebak lagi. Selama sapaan BELUM ada (termasuk pesan sambutan pertama), panggil "Mas/Mbak" (tulis persis begitu, jangan memilih salah satu). Setelah customer menyebut nama, tanya TERPISAH enaknya dipanggil Mas atau Mbak lalu simpan lewat simpan_nama.
 - WAJIB pakai tepat 1 emoji di setiap balasan, ditaruh di ujung kalimat terakhir, yang nyambung dengan isi (☕ minuman, 🍢 camilan, 🍛 makan berat, 😊 ramah/ucapan, 🙏 maaf/terima kasih, 😋 upsell menggoda). Cuma 1, jangan lebih. Ini TIDAK melanggar aturan "1 kalimat". Kalau balasan berisi daftar/rincian angka, emojinya taruh di kalimat penutup setelah daftar.
@@ -1120,8 +1147,18 @@ SIFAT PENTING -- JANGAN KAKU:
 - Tidak ada "script" wajib. Baca konteks percakapan (termasuk histori) untuk nentuin maksud customer dan tool apa yang relevan.
 - Variasikan cara nanya/narasi, jangan mengulang kalimat yang sama persis tiap saat.
 
+KONSULTASI (KAMU JUGA TEMPAT BERTANYA):
+- Cimendo bukan cuma pencatat pesanan. Customer boleh bertanya atau minta saran: mau makan apa buat berapa orang, cocoknya menu apa buat acara/arisan/ulang tahun/meeting/kencan, menu yang tidak pedas atau ramah anak, patungan dan bujet, pilih booking meja atau Cablaka, kapan waktu enak datang, dan sejenisnya. Layani seperti pelayan senior yang paham resto ini, bukan mesin formulir.
+- Awam atau sudah paham, ikuti level customer. Customer awam (bingung, "enaknya apa", "baru pertama ke sini", tidak tahu istilah): tanya SATU hal ringan dulu (acara/berapa orang/suka pedas atau tidak), lalu beri 2-3 saran konkret dengan alasan singkat, jangan menyodorkan daftar panjang atau istilah teknis. Customer yang sudah paham (menyebut menu/jumlah/jam/tempat dengan jelas, "langsung aja"): jangan banyak tanya dan jangan menjelaskan hal yang tidak ditanya, langsung kerjakan.
+- Jangan mengarang fakta: ukuran/gramasi porsi, tingkat pedas selain ada atau tidak, halal/sertifikasi, dan statistik ("paling laris", "paling sering dipesan") TIDAK ada di data. Pakai kata "andalan" untuk menu andalan, dan untuk porsi bilang belum punya infonya (boleh kasih patokan umum yang jelas bertanda perkiraan).
+- Saran menu HARUS dari data (rekomendasi_menu, cari_menu_atribut, tanya_detail_menu, lihat_menu). Bujet atau perkiraan total WAJIB lewat hitung_perkiraan_bujet, jangan menghitung sendiri. Jumlah porsi per orang boleh disarankan kira-kira (misal "biasanya 1 lauk per orang, camilan dibagi"), bilang itu perkiraan.
+- Kalau customer menanyakan hal yang TIDAK ada di data (dekorasi, boleh/tidaknya membawa kue atau makanan dari luar, parkir, proyektor khusus, harga paket khusus, dll), jangan mengarang dan jangan menyiratkan boleh atau tidak boleh: bilang jujur belum punya infonya, dan LANGSUNG panggil forward_pesan_ke_kasir (urgent=false) di giliran yang sama supaya tim yang menjawab. Jangan berjanji "nanti aku teruskan" tanpa memanggil tool-nya, dan satu hal cukup diteruskan SEKALI (jangan diteruskan lagi di giliran berikutnya kalau sudah pernah). Fasilitas Cablaka hanya yang tercantum di info resto.
+- Cablaka punya minimum order Rp2.000.000 (gratis pemakaian 3 jam). SEBELUM merekomendasikan Cablaka, bandingkan dengan perkiraan belanja customer (hitung_perkiraan_bujet kalau perlu). Kalau perkiraannya jelas di bawah itu, bilang jujur di pesan yang sama dan jadikan meja biasa pilihan utama; Cablaka tetap ditawarkan kalau customer memang mau ruang privat dan sanggup mencapai minimum. JANGAN memaksa customer menambah pesanan hanya demi memenuhi minimum.
+- Jangan menawarkan hal di luar data sebagai kepastian (misal "meja biasa tetap bisa begini/begitu"). Yang pasti hanya: jam buka, menu dan harga, fasilitas Cablaka, DP dan minimum order, aturan reservasi.
+- Konsultasi boleh lebih panjang dari aturan 1 kalimat (maksimal 4 kalimat pendek atau satu daftar bernomor), tetap santai dan to the point, lalu akhiri dengan satu pertanyaan atau langkah berikutnya.
+
 SCOPE OBROLAN:
-Bebas ngobrol apa saja yang nyambung ke: menu & harga, detail menu (bahan, pedas, alergen, dll), pesanan/transaksi, nomor meja, obrolan ringan terkait kunjungan mereka (lagi di jalan, mau makan rame-rame, dll). Kalau topiknya di luar itu total (politik, hal pribadi tidak relevan), tanggapi sopan & singkat, arahkan balik secara natural -- jangan menolak kaku.
+Bebas ngobrol apa saja yang nyambung ke: menu & harga, detail menu (bahan, pedas, alergen, dll), konsultasi memilih menu/tempat/acara dan bujet, reservasi, pesanan/transaksi, nomor meja, obrolan ringan terkait kunjungan mereka (lagi di jalan, mau makan rame-rame, dll). Kalau topiknya di luar itu total (politik, hal pribadi tidak relevan), tanggapi sopan & singkat, arahkan balik secara natural -- jangan menolak kaku.
 
 ATURAN RESTO PENTING:
 - Fakta layanan, harga, nasi, sambal, dan aturan ubah/batal ada di blok "INFO RESTO DAN ATURAN" di akhir prompt. Ikuti blok itu.
@@ -1196,7 +1233,7 @@ ATURAN PENULISAN WAJIB (PELANGGARAN = FATAL):
 - Kapitalisasi normal bahasa Indonesia, BUKAN Title Case Di Setiap Kata.
 - Jangan menyebut dirimu "AI", "bot", "sistem", atau "asisten virtual".
 - MAKSIMAL 1 KALIMAT per balasan. Tidak ada kalimat pembuka, tidak ada basa-basi tambahan, tidak ada penutup yang tidak diminta.
-- Pengecualian HANYA untuk: (a) daftar/rincian menu atau rincian pesanan (nama, qty, harga) yang WAJIB pakai format angka (1. 2. 3.), (b) kalau ada 2 informasi yang benar-benar tidak bisa digabung jadi 1 kalimat (misal: kabari sesuatu + tanya sesuatu yang beda topik), maksimal 2 kalimat pendek, titik, (c) pesan sambutan pertama ke customer baru, maksimal 3 kalimat dan wajib menyebut nama "The Banjoemas Resto & Cafe", dan (d) DAFTAR PILIHAN bernomor (1 kalimat tanya + satu opsi per baris).
+- Pengecualian HANYA untuk: (a) daftar/rincian menu atau rincian pesanan (nama, qty, harga) yang WAJIB pakai format angka (1. 2. 3.), (b) kalau ada 2 informasi yang benar-benar tidak bisa digabung jadi 1 kalimat (misal: kabari sesuatu + tanya sesuatu yang beda topik), maksimal 2 kalimat pendek, titik, (c) pesan sambutan pertama ke customer baru, maksimal 3 kalimat dan wajib menyebut nama "The Banjoemas Resto & Cafe", (d) DAFTAR PILIHAN bernomor (1 kalimat tanya + satu opsi per baris), dan (e) KONSULTASI (lihat bagian KONSULTASI): maksimal 4 kalimat pendek.
 - Kalau ada daftar, SETELAH daftar boleh tambah maksimal 1 kalimat pendek (misal pertanyaan lanjutan), bukan paragraf.
 - JANGAN PERNAH pakai tanda strip panjang (—) atau double dash (--). Pakai koma, titik, atau kalimat baru.
 - Selesaikan kalimat dengan lengkap, jangan terpotong.`;
@@ -1249,7 +1286,7 @@ function pesanMenyebutMenu(pesan) {
   return false;
 }
 
-const TOOL_PENCATAT_ORDER = ['buat_order', 'ubah_jumlah_item', 'hapus_item_order', 'ubah_tipe_item', 'jawab_klarifikasi_menu', 'jawab_pilihan_menu', 'tanya_detail_menu', 'lihat_menu', 'cari_menu_atribut', 'rekomendasi_menu', 'cek_status_order_saya', 'forward_pesan_ke_kasir', 'putuskan_item_habis', 'tampilkan_rincian_order', 'batalkan_order', 'atur_layanan'];
+const TOOL_PENCATAT_ORDER = ['buat_order', 'hitung_perkiraan_bujet', 'ubah_jumlah_item', 'hapus_item_order', 'ubah_tipe_item', 'jawab_klarifikasi_menu', 'jawab_pilihan_menu', 'tanya_detail_menu', 'lihat_menu', 'cari_menu_atribut', 'rekomendasi_menu', 'cek_status_order_saya', 'forward_pesan_ke_kasir', 'putuskan_item_habis', 'tampilkan_rincian_order', 'batalkan_order', 'atur_layanan'];
 
 const KLAIM_BERISIKO = [
   // Customer menyebut/berubah pikiran soal menu ("eh yang tadi aja deh mie"), AI membalas "siap, Mie Godog x1" tanpa tool: tidak tercatat.
@@ -1284,7 +1321,7 @@ const KLAIM_BERISIKO = [
   {
     klaim: 'daftar menu',
     re: { test: (t) => jumlahBarisNamaMenu(t) >= 2 },
-    tool: ['cari_menu_atribut', 'rekomendasi_menu', 'lihat_menu', 'tanya_detail_menu', 'buat_order', 'jawab_klarifikasi_menu', 'jawab_pilihan_menu', 'tampilkan_rincian_order', 'cek_status_order_saya', 'ubah_jumlah_item', 'hapus_item_order', 'ubah_tipe_item', 'putuskan_item_habis'],
+    tool: ['cari_menu_atribut', 'rekomendasi_menu', 'hitung_perkiraan_bujet', 'lihat_menu', 'tanya_detail_menu', 'buat_order', 'jawab_klarifikasi_menu', 'jawab_pilihan_menu', 'tampilkan_rincian_order', 'cek_status_order_saya', 'ubah_jumlah_item', 'hapus_item_order', 'ubah_tipe_item', 'putuskan_item_habis'],
     kecuali: (t) => /pesanan sementara\s*:|rincian pesanan\b/i.test(t), // ditangani aturan lain
   },
   // AI menulis daftar "Pesanan sementara:" dari ingatan percakapan padahal menu itu tidak pernah masuk draft (buat_order tidak dipanggil).
@@ -1840,6 +1877,13 @@ function masukkanItemKeDraft(konteks, items) {
   return { pesananId, qrLamaJadiInvalid };
 }
 
+// Customer minta suhu yang tidak ada untuk menu itu: beri tahu jujur dan biarkan dia memutuskan (item sudah masuk apa adanya).
+function teksPeringatanSuhu(daftar) {
+  if (!daftar || daftar.length === 0) return '';
+  const rincian = daftar.map((p) => `${p.menu} hanya tersedia ${p.tersedia.join('/')}, bukan ${p.diminta}`).join('; ');
+  return `PENTING (suhu): ${rincian}. Item itu SUDAH masuk draft dengan suhu yang tersedia. Di ringkasan, tulis jujur 1 kalimat bahwa menu itu tidak ada versi yang diminta, lalu tanyakan sebagai DAFTAR BERNOMOR: "1. Tetap pesan (suhu yang tersedia)" dan "2. Ganti menu lain" (kalau customer ganti: hapus_item_order untuk menu itu lalu cari alternatifnya lewat cari_menu_atribut atau rekomendasi_menu). `;
+}
+
 async function eksekusiBuatOrder({ teks_mentah }, konteks) {
   const pagar = pagarJam();
   if (pagar) return pagar;
@@ -1944,10 +1988,12 @@ async function eksekusiBuatOrder({ teks_mentah }, konteks) {
     menu_tidak_ditemukan: hasilParse.tidakDikenali.length > 0 ? hasilParse.tidakDikenali : null,
     qr_sebelumnya_invalid: qrLamaJadiInvalid || undefined,
     tawarkan_nasi: tambahan.tawarkan_nasi || undefined,
+    peringatan_suhu: hasilParse.peringatanSuhu?.length > 0 ? hasilParse.peringatanSuhu : undefined,
   };
   const pembuka = (qrLamaJadiInvalid ? 'PENTING: QR lama TIDAK BERLAKU LAGI karena ada tambahan item (nominal berubah), ingatkan singkat jangan bayar pakai QR lama. ' : '')
     + 'Item sudah masuk draft. Balas SATU pesan: baris pertama "Pesanan sementara:" lalu RINGKASAN SEMUA item di draft (items_total_di_draft) dengan format angka (1. 2. 3.), tanpa harga. '
-    + (hasilParse.tidakDikenali.length > 0 ? 'Sebutkan juga singkat menu yang tidak ditemukan. ' : '');
+    + (hasilParse.tidakDikenali.length > 0 ? 'Sebutkan juga singkat menu yang tidak ditemukan. ' : '')
+    + teksPeringatanSuhu(hasilParse.peringatanSuhu);
   const nasi = tambahan.tawarkan_nasi
     ? 'Ada makanan berat tanpa nasi: di daftar bernomor berikut, jadikan baris PERTAMA "Tambah nasi putih (Rp10.000)" (nomor lain bergeser). Kalau customer memilihnya -> buat_order "nasi putih" dengan jumlah sama dengan porsi lauknya (atau sesuai yang dia sebut). Ditawarkan SEKALI ini saja. '
     : '';
@@ -3188,6 +3234,42 @@ async function eksekusiSimpanNama({ nama, sapaan }, konteks) {
 const TIPE_DB = { dine_in: 'DINE_IN', take_away: 'TAKE_AWAY' };
 const LABEL_TIPE = { DINE_IN: 'dine in', TAKE_AWAY: 'take away' };
 
+async function eksekusiHitungPerkiraanBujet({ item, jumlah_orang }) {
+  const daftar = Array.isArray(item) ? item : [];
+  if (daftar.length === 0) return { sukses: false, pesan: 'Daftar menu kosong.' };
+  const baris = [];
+  const tidakKetemu = [];
+  const perluDipilih = [];
+  let subtotal = 0;
+  for (const it of daftar) {
+    const qty = Math.max(1, Number(it.qty) || 1);
+    const m = cariKandidatMenu(String(it.nama || ''));
+    if (m.statusMatch === 'TIDAK_ADA' || !m.kandidatTerbaik) {
+      if (m.statusMatch === 'AMBIGU_MULTI' && m.kandidatList?.length) perluDipilih.push({ nama: it.nama, pilihan: m.kandidatList.slice(0, 4).map((k) => k.nama) });
+      else tidakKetemu.push(it.nama);
+      continue;
+    }
+    const menu = m.kandidatTerbaik;
+    const harga = menu.varian.reduce((min, v) => Math.min(min, v.harga), Infinity);
+    const bervarian = menu.varian.length > 1;
+    subtotal += harga * qty;
+    baris.push(`${menu.nama}${menu.tersedia ? '' : ' (sedang habis)'} x${qty} = ${rp(harga * qty)}${bervarian ? ' (harga porsi terkecil)' : ''}`);
+  }
+  const tagihan = config.hitungTagihan(subtotal);
+  const orang = Number(jumlah_orang) || 0;
+  return {
+    sukses: baris.length > 0,
+    rincian: baris,
+    subtotal,
+    ppn: tagihan.ppn,
+    grand_total: tagihan.grandTotal,
+    per_orang: orang > 0 ? Math.ceil(tagihan.grandTotal / orang) : undefined,
+    menu_tidak_ketemu: tidakKetemu.length ? tidakKetemu : undefined,
+    perlu_dipilih: perluDipilih.length ? perluDipilih : undefined,
+    catatan_untuk_ai: 'Ini PERKIRAAN, bukan pesanan. Sebut total sudah termasuk PPN 10% dan per orang kalau ada. Kalau ada menu yang tidak ketemu atau perlu dipilih, tanyakan dulu atau ganti dengan menu yang ada. Kalau ada yang bertanda "harga porsi terkecil", bilang harganya bisa lebih tinggi untuk porsi besar. Tawarkan: kalau cocok bisa langsung dipesan atau dibantu reservasi.',
+  };
+}
+
 async function eksekusiRekomendasiMenu({ kelompok }, konteks) {
   const tersedia = db.getMenuTersedia();
   const idKat = kelompok ? new Set(db.getKategoriByKelompok(kelompok).map((k) => k.id)) : null;
@@ -3865,6 +3947,7 @@ async function eksekusiKonfirmasiDepositBooking({ nomor_booking }, konteks) {
 const EKSEKUTOR_CUSTOMER = {
   info_resto: eksekusiInfoResto,
   ajukan_booking: eksekusiAjukanBooking,
+  hitung_perkiraan_bujet: eksekusiHitungPerkiraanBujet,
   panggil_waiter: eksekusiPanggilWaiter,
   atur_cara_bayar: eksekusiAturCaraBayar,
   minta_bill: eksekusiMintaBill,
