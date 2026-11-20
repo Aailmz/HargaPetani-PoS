@@ -305,7 +305,7 @@ function buatBlokInfoResto() {
       resto.instagram && `Instagram: ${resto.instagram}`,
     ].filter(Boolean);
     if (info.length) baris.push(`INFO RESTO (sebut hanya kalau customer tanya):\n- ${info.join('\n- ')}`);
-    baris.push(`JAM BUKA:\n${config.teksJamOperasional()}\nLIVE MUSIC:\n${config.teksLiveMusic()}\nKapasitas ${config.info().kapasitas_seat} seat. Ruang VIP (Cablaka) dan booking seluruh resto tersedia. Untuk pertanyaan info resto / jam buka / live music / ruang VIP / booking, panggil tool info_resto (jawabannya lengkap dikirim sistem).`);
+    baris.push(`JAM BUKA:\n${config.teksJamOperasional()}\nLIVE MUSIC:\n${config.teksLiveMusic()}\nKapasitas ${config.info().kapasitas_seat} seat (1 meja = 4-5 seat). Ruang Meeting Cablaka (lantai 2, TIDAK ada minimum pax, maksimal 30 pax, pakai DP) tersedia. Reservasi bisa booking meja biasa (tanpa DP) atau Cablaka; lebih dari 30 pax ditangani manager lewat nomor official restoran. Untuk pertanyaan info resto / jam buka / live music / Cablaka / reservasi, panggil tool info_resto (jawabannya lengkap dikirim sistem).`);
   }
 
   if (aturan) {
@@ -744,13 +744,13 @@ const TOOLS_CUSTOMER_SEMUA = [
     type: 'function',
     function: {
       name: 'info_resto',
-      description: 'Kirim info resto LENGKAP ke customer (sistem yang mengirim teksnya utuh, kamu cukup menambah 1 kalimat). Dipakai kalau customer tanya info resto, alamat, jam buka/tutup, last order, live music, kapasitas, ruang VIP / ruang meeting, booking seluruh resto, atau "resto ini gimana". topik "semua" untuk info umum lengkap.',
+      description: 'Kirim info resto LENGKAP ke customer (sistem yang mengirim teksnya utuh, kamu cukup menambah 1 kalimat). Dipakai kalau customer tanya info resto, alamat, jam buka/tutup, last order, live music, kapasitas, ruang Cablaka / ruang meeting, aturan reservasi, booking seluruh resto, atau "resto ini gimana". topik "semua" untuk info umum lengkap.',
       parameters: {
         type: 'object',
         properties: {
           topik: {
             type: 'string',
-            enum: ['semua', 'jam', 'live_music', 'ruang_vip', 'full_booking', 'lokasi'],
+            enum: ['semua', 'jam', 'live_music', 'ruang_vip', 'reservasi', 'full_booking', 'lokasi'],
             description: '"semua" (default) = info lengkap. Pakai topik spesifik kalau customer hanya menanyakan itu.',
           },
         },
@@ -762,19 +762,19 @@ const TOOLS_CUSTOMER_SEMUA = [
     type: 'function',
     function: {
       name: 'ajukan_booking',
-      description: 'Ajukan booking Ruang VIP (Meeting Cablaka, 25-30 orang) atau booking seluruh resto (80 seat). Isi hanya yang sudah disebut customer; kalau ada yang kurang, tool memberi tahu apa yang perlu ditanyakan (tanyakan SEMUANYA sekaligus dalam satu pesan). Booking baru diteruskan ke tim dan dikonfirmasi manusia, JANGAN menjanjikan sudah pasti.',
+      description: 'Ajukan reservasi setelah customer jelas memilih tempatnya. jenis "meja" = booking meja biasa (tanpa DP, 1 meja muat 4-5 pax). jenis "cablaka" = Ruang Meeting Cablaka lantai 2 (TIDAK ada minimum pax, maksimal 30 pax, wajib DP lewat transfer rekening). Lebih dari 30 pax TIDAK diproses bot (customer diarahkan ke nomor official restoran, manager yang menangani). Isi hanya yang sudah disebut customer; kalau ada yang kurang, tool memberi tahu apa yang perlu ditanyakan (tanyakan SEMUANYA sekaligus, ngobrol natural). Reservasi diteruskan ke kasir dan dikonfirmasi manusia, JANGAN menjanjikan sudah pasti. Ke customer selalu pakai kata "pax", bukan "seat" atau "orang".',
       parameters: {
         type: 'object',
         properties: {
-          jenis: { type: 'string', enum: ['ruang_vip', 'full_resto'], description: 'ruang_vip = Ruang Meeting Cablaka; full_resto = booking seluruh resto.' },
+          jenis: { type: 'string', enum: ['meja', 'cablaka'], description: 'Pilihan tempat customer. Isi HANYA kalau customer sudah memilih/menyetujui (bukan tebakan).' },
           tanggal: { type: 'string', description: 'Tanggal format YYYY-MM-DD (hari ini ada di STATE). Ubah "besok", "sabtu depan", "20 des" jadi format ini.' },
           jam: { type: 'string', description: 'Jam mulai format 24 jam HH:MM.' },
-          jumlah_orang: { type: 'integer', description: 'Perkiraan jumlah orang.' },
+          jumlah_pax: { type: 'integer', description: 'Jumlah pax.' },
           nama: { type: 'string', description: 'Nama pemesan (tanpa sapaan).' },
-          rokok: { type: 'string', enum: ['smoking', 'non_smoking'], description: 'Khusus ruang VIP: area smoking atau non smoking.' },
+          rokok: { type: 'string', enum: ['smoking', 'non_smoking'], description: 'Area smoking atau non smoking (ditanyakan untuk semua reservasi).' },
           catatan: { type: 'string', description: 'Kebutuhan lain (acara, sound system, dll).' },
         },
-        required: ['jenis'],
+        required: [],
       },
     },
   },
@@ -845,13 +845,13 @@ const TOOLS_OPERATOR = [
     type: 'function',
     function: {
       name: 'konfirmasi_booking',
-      description: 'Kasir/staf menerima atau menolak pengajuan booking (ruang VIP atau full resto). Dipakai kalau kasir bilang semacam "booking 3 diterima", "booking 3 ok", "booking 2 ditolak penuh". Menerima booking ruang VIP otomatis meminta deposit.',
+      description: 'Kasir/staf menerima atau menolak pengajuan reservasi (meja atau Cablaka). Dipakai kalau kasir bilang semacam "booking 3 diterima", "booking 3 ok", "booking 2 ditolak penuh". Menerima booking Cablaka otomatis mengirim detail rekening DP ke customer.',
       parameters: {
         type: 'object',
         properties: {
           nomor_booking: { type: 'integer', description: 'Nomor booking dari notifikasi "BOOKING #3".' },
           aksi: { type: 'string', enum: ['terima', 'tolak'] },
-          alasan: { type: 'string', description: 'Alasan singkat untuk customer kalau ditolak, atau catatan tambahan kalau diterima.' },
+          alasan: { type: 'string', description: 'Alasan singkat kalau ditolak, atau catatan tambahan kalau diterima. HANYA mengutip yang kasir katakan, jangan menambah janji atau layanan yang tidak disebut kasir. Kosongkan kalau kasir tidak menyebut apa-apa.' },
         },
         required: ['nomor_booking', 'aksi'],
       },
@@ -861,7 +861,7 @@ const TOOLS_OPERATOR = [
     type: 'function',
     function: {
       name: 'konfirmasi_deposit_booking',
-      description: 'Tandai deposit booking sudah dibayar (kasir bilang "deposit booking 3 sudah masuk"). Booking jadi terkunci dan customer dikabari.',
+      description: 'Tandai DP booking Cablaka sudah masuk ke rekening (kasir bilang "deposit booking 3 sudah masuk" / "DP booking 3 masuk"). Booking jadi terkunci dan customer dikabari.',
       parameters: {
         type: 'object',
         properties: { nomor_booking: { type: 'integer', description: 'Nomor booking.' } },
@@ -1200,8 +1200,11 @@ ALUR PESAN 3 FASE (PANDUAN LEMBUT, BUKAN JALUR KAKU):
 - PPN: harga menu belum termasuk PPN 10%. JANGAN menyebut soal PPN/pajak kecuali customer menanyakannya (rincian sudah menampilkannya otomatis).
 
 INFO RESTO, BOOKING, WAITER, KUIS, RATING:
-- Customer tanya info resto / jam buka / last order / live music / kapasitas / ruang VIP / ruang meeting / booking -> panggil info_resto (sistem mengirim teks lengkapnya, jangan diulang), lalu 1 kalimat ajak lanjut (misal mau booking?). Pengecualian aturan 1 kalimat: teks dari tool boleh panjang karena dikirim sistem.
-- Booking (ruang VIP / seluruh resto): kumpulkan tanggal, jam, jumlah orang, nama, dan (ruang VIP) smoking/non smoking, lalu ajukan_booking. Tool memberi tahu apa yang kurang; tanyakan semua yang kurang SEKALIGUS. Booking dikonfirmasi tim, jangan menjanjikan pasti. Ruang VIP wajib deposit di awal; QR deposit dikirim setelah tim menerima booking.
+- Customer tanya info resto / jam buka / last order / live music / kapasitas / Cablaka / ruang meeting / reservasi -> panggil info_resto (sistem mengirim teks lengkapnya, jangan diulang), lalu 1 kalimat ajak lanjut (misal mau reservasi?). Pengecualian aturan 1 kalimat: teks dari tool boleh panjang karena dikirim sistem.
+- RESERVASI (ngobrol, bukan formulir): ke customer pakai kata "pax", bukan "seat" atau "orang". Data yang dibutuhkan: pilihan tempat, tanggal, jam, jumlah pax, area smoking atau non smoking, dan nama. Ambil dari yang sudah customer sebut, tanyakan sisanya sekaligus dalam satu pesan yang mengalir, misal "Kakak mau reservasi untuk berapa pax? Smoking atau non smoking?". Dua pilihan tempat: (1) booking meja biasa, 1 meja muat 4-5 pax, tanpa DP; (2) Ruang Meeting Cablaka lantai 2, TIDAK ada minimum pax (boleh berdua sekalipun, maksimal 30 pax), pakai DP Rp400.000 lewat transfer ke rekening yang dikirim setelah tim menerima reservasi, minimum order Rp2.000.000 (gratis pemakaian 3 jam), fasilitas LCD TV, sound system, white board, WiFi. JANGAN menentukan tempat dari jumlah pax saja: bantu customer memilih lewat konsultasi (acara apa, perlu privasi/presentasi/karaoke-an atau cukup santai), rekomendasikan satu dengan alasannya, sebut alternatifnya, dan hanya isi jenis di ajukan_booking setelah customer memilih. Customer yang sudah menyebut pilihannya ("booking Cablaka buat 8 orang") langsung diproses tanpa dikonsultasikan ulang. Untuk Cablaka, sebut singkat bahwa DP Rp400.000 (transfer) berlaku setelah reservasi diterima. Sebelum ajukan_booking berhasil, JANGAN bilang reservasinya sudah dibuat atau disiapkan: baru ditanyakan datanya. Reservasi dikonfirmasi tim, jangan menjanjikan pasti. Untuk reservasi TIDAK ada pembayaran lewat QR. Lebih dari 30 pax TIDAK bisa lewat sini: arahkan ke nomor official restoran, manager yang menangani.
+- Customer minta booking seluruh resto / 50 atau 80 pax / acara besar -> info_resto topik full_booking (sistem mengirim nomor official), jangan mencatat booking.
+- Customer bilang sudah transfer DP Cablaka (atau mengirim bukti transfer) -> forward_pesan_ke_kasir dengan urgent=false (urgent=true membisukan Cimendo untuk customer itu, jangan dipakai di sini), sebut nomor booking dan nominalnya, lalu bilang tim sedang mengecek (jangan menyatakan DP sudah masuk, yang menandai hanya kasir).
+- Pesan singkat seperti "minta bill" atau "panggil waiter" HANYA memicu tool-nya sendiri (minta_bill / panggil_waiter). Jangan ikut mengirim ulang info resto atau menawarkan hal lain.
 - Customer minta dipanggilkan waiter / butuh bantuan di meja -> panggil_waiter (butuh nomor meja; kalau belum ada, tanyakan).
 - Kuis Banyumasan: setelah pesanan masuk dapur, sistem menawari kuis. Customer mau main -> mulai_kuis. Selama kuis berjalan, sistem yang memproses jawabannya.
 - Rating: setelah meja dikosongkan, sistem menanyakan rating 1-5. Kalau customer menjawab dengan kata dan bukan angka yang jelas, tanya ulang "1 sampai 5, berapa nilainya?" (catat_rating hanya untuk angka yang jelas).
@@ -3562,7 +3565,7 @@ async function eksekusiForwardPesanKeKasir({ ringkasan, urgent, pesanan_id }, ko
   };
 }
 
-// ========== INFO RESTO, BOOKING, WAITER, OPEN BILL, RATING, KUIS ==========
+// ========== INFO RESTO, RESERVASI, WAITER, BILL, RATING, KUIS ==========
 
 async function eksekusiInfoResto({ topik }, konteks) {
   const i = config.info();
@@ -3570,7 +3573,8 @@ async function eksekusiInfoResto({ topik }, konteks) {
   const teks = {
     jam: `Jam buka ${i.nama_resto}:\n${config.teksJamOperasional()}`,
     live_music: `Live music di ${i.nama_resto}:\n${config.teksLiveMusic()}`,
-    ruang_vip: `${config.teksRuangVip()}\n\nMau booking? Sebutkan tanggal, jam, dan jumlah orangnya ya.`,
+    ruang_vip: `${config.teksRuangVip()}\n\nMau reservasi? Sebutkan tanggal, jam, dan jumlah pax-nya ya.`,
+    reservasi: config.teksReservasi(),
     full_booking: config.teksFullBooking(),
     lokasi: `${i.nama_resto}\n${i.alamat}\nReservasi: ${i.telepon_reservasi} | Instagram ${i.instagram}`,
     semua: config.teksInfoLengkap(),
@@ -3579,29 +3583,59 @@ async function eksekusiInfoResto({ topik }, konteks) {
   return {
     sukses: true,
     topik: t,
-    catatan_untuk_ai: 'Teks info lengkap SUDAH dikirim sistem ke customer. JANGAN mengulang isinya. Balas 1 kalimat singkat saja yang mengajak lanjut (mau booking, lihat menu, atau pesan).',
+    catatan_untuk_ai: 'Teks info lengkap SUDAH dikirim sistem ke customer. JANGAN mengulang isinya. Balas 1 kalimat singkat saja yang mengajak lanjut (mau reservasi, lihat menu, atau pesan).',
   };
 }
 
-const NAMA_JENIS_BOOKING = { RUANG_VIP: 'RUANG VIP (Meeting Cablaka)', FULL_RESTO: 'FULL BOOKING RESTO' };
+const NAMA_BULAN = ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'];
+// "2026-11-28" -> "Sabtu, 28 November 2026"
+function tanggalIndo(ymd) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(ymd || ''));
+  if (!m) return String(ymd || '');
+  const hari = new Date(`${ymd}T12:00:00Z`).getUTCDay();
+  return `${config.NAMA_HARI[hari]}, ${Number(m[3])} ${NAMA_BULAN[Number(m[2]) - 1]} ${m[1]}`;
+}
+
+// MEJA / CABLAKA dipakai reservasi baru. RUANG_VIP / FULL_RESTO hanya tersisa di data lama.
+const NAMA_JENIS_BOOKING = {
+  MEJA: 'BOOKING MEJA',
+  CABLAKA: 'RUANG MEETING CABLAKA',
+  RUANG_VIP: 'RUANG MEETING CABLAKA',
+  FULL_RESTO: 'FULL BOOKING RESTO',
+};
+const jenisButuhDp = (jenis) => jenis === 'CABLAKA' || jenis === 'RUANG_VIP';
 
 async function eksekusiAjukanBooking(args, konteks) {
-  const jenis = args.jenis === 'full_resto' ? 'FULL_RESTO' : 'RUANG_VIP';
   const c = db.getCustomer(konteks.jid);
   const nama = String(args.nama || c.nama || '').trim().replace(/^(mas|mbak|mba|kak)\s+/i, '');
-  const kurang = [];
+  const pax = Number(args.jumlah_pax ?? args.jumlah_orang) || 0;
+  const aturan = config.aturanReservasi();
 
+  // Lebih dari 30 pax: Cimendo tidak memproses, customer diarahkan ke nomor official (manager). Dicek paling awal.
+  if (pax > aturan.maksCablaka) {
+    await konteks.kirimPesan(konteks.jid, config.teksFullBooking());
+    return {
+      sukses: false,
+      handoff_manager: true,
+      pesan: `Lebih dari ${aturan.maksCablaka} pax tidak diproses Cimendo.`,
+      catatan_untuk_ai: `Teks arahan ke nomor official restoran SUDAH dikirim sistem, jangan diulang. Balas 1 kalimat singkat saja (misal: untuk ${pax} pax manager yang bantu langsung ya). Booking TIDAK dicatat. Kalau customer ternyata mengubah jumlah pax menjadi ${aturan.maksCablaka} atau kurang, lanjutkan reservasi seperti biasa.`,
+    };
+  }
+
+  const kurang = [];
   if (!/^\d{4}-\d{2}-\d{2}$/.test(String(args.tanggal || ''))) kurang.push('tanggal');
   const jamMenit = args.jam ? parseJam(args.jam) : null;
   if (jamMenit === null) kurang.push('jam mulai');
-  if (!args.jumlah_orang) kurang.push('perkiraan jumlah orang');
+  if (!pax) kurang.push('jumlah pax');
   if (!nama) kurang.push('nama pemesan');
-  if (jenis === 'RUANG_VIP' && !args.rokok) kurang.push('area smoking atau non smoking');
+  if (!args.rokok) kurang.push('area smoking atau non smoking');
+  const jenis = config.jenisReservasi(pax, args.jenis); // 'MEJA' | 'CABLAKA' | null (belum dipilih)
+  if (!jenis) kurang.push('pilihan tempat (booking meja biasa atau Ruang Meeting Cablaka)');
   if (kurang.length > 0) {
     return {
       sukses: false,
       data_kurang: kurang,
-      catatan_untuk_ai: `Data booking belum lengkap. Tanyakan SEMUA yang kurang sekaligus dalam satu pesan: ${kurang.join(', ')}. Hari ini ${tanggalBot()}. Setelah dijawab, panggil ajukan_booking lagi dengan data lengkap (gabungkan dengan yang sudah disebut).`,
+      catatan_untuk_ai: `Data reservasi belum lengkap: ${kurang.join(', ')}. Tanyakan yang kurang dengan ngobrol natural dalam satu pesan, pakai kata "pax" (bukan "seat" atau "orang"), misal "Kakak mau reservasi untuk berapa pax? Smoking atau non smoking?". Kalau PILIHAN TEMPAT yang belum ada, jangan menyodorkan formulir: tanya sedikit konteksnya (acara apa, rame-rame atau santai, perlu ruang tertutup/LCD/sound?), lalu REKOMENDASIKAN satu pilihan dengan alasannya dan tawarkan alternatifnya (Cablaka bisa untuk berapa pun pax sampai 30, DP ${rp(config.info().ruang_vip?.deposit || 0)}; meja biasa tanpa DP). Hari ini ${tanggalBot()}. Setelah dijawab, panggil ajukan_booking lagi dengan data lengkap (gabungkan dengan yang sudah disebut).`,
     };
   }
 
@@ -3613,46 +3647,41 @@ async function eksekusiAjukanBooking(args, konteks) {
   if (!jadwal || jamMenit < config.menitDariJam(jadwal.buka) || jamMenit >= config.menitDariJam(jadwal.tutup)) {
     return { sukses: false, pesan: 'Jam di luar jam buka.', catatan_untuk_ai: `Jam itu di luar jam buka pada hari tersebut (${jadwal ? `${config.fmtJam(jadwal.buka)}-${config.fmtJam(jadwal.tutup)}` : 'tutup'}). Tanyakan jam lain.` };
   }
-  const kapasitas = jenis === 'RUANG_VIP' ? 30 : (config.info().kapasitas_seat || 80);
-  if (Number(args.jumlah_orang) > kapasitas) {
-    return {
-      sukses: false,
-      pesan: `Melebihi kapasitas ${kapasitas}.`,
-      catatan_untuk_ai: jenis === 'RUANG_VIP'
-        ? 'Ruang VIP maksimal 30 orang. Tawarkan booking seluruh resto (80 seat) sebagai DAFTAR BERNOMOR "1. Booking seluruh resto" dan "2. Ubah jumlah orang".'
-        : 'Melebihi 80 seat, sampaikan santai dan tanya jumlah yang benar.',
-    };
-  }
 
   const jam = formatJam(jamMenit);
   const sama = db.getBookingAktifByCustomer(konteks.jid).find((b) => b.jenis === jenis && b.tanggal === args.tanggal && b.jam === jam);
   if (sama) {
-    return { sukses: true, sudah_ada: true, nomor_booking: sama.id, catatan_untuk_ai: `Booking ini sudah diajukan (#${sama.id}) dan sedang diproses tim. Bilang itu, jangan ajukan ulang.` };
+    return { sukses: true, sudah_ada: true, nomor_booking: sama.id, catatan_untuk_ai: `Reservasi ini sudah diajukan (#${sama.id}) dan sedang diproses tim. Bilang itu, jangan ajukan ulang.` };
   }
 
-  const rokok = args.rokok === 'smoking' ? 'SMOKING' : args.rokok === 'non_smoking' ? 'NON_SMOKING' : null;
+  const rokok = args.rokok === 'smoking' ? 'SMOKING' : 'NON_SMOKING';
   const id = db.buatBooking({
     customer_jid: konteks.jid, jenis, tanggal: args.tanggal, jam,
-    jumlah_orang: Number(args.jumlah_orang), nama, rokok, catatan: args.catatan || null,
+    jumlah_orang: pax, nama, rokok, catatan: args.catatan || null,
   });
   if (nama && !c.nama) db.setCustomerNama(konteks.jid, nama);
 
-  const v = config.info().ruang_vip;
+  const v = config.info().ruang_vip || {};
+  const meja = config.estimasiMeja(pax);
+  const ketentuan = jenis === 'CABLAKA'
+    ? `Ketentuan: min spend ${rp(v.minimum_spend)}, DP ${rp(v.deposit)} via transfer rekening (detail rekening dikirim otomatis ke customer setelah kamu terima).`
+    : `Tanpa DP. Estimasi ${meja.min === meja.maks ? meja.min : `${meja.min}-${meja.maks}`} meja (1 meja ${aturan.paxPerMejaMin}-${aturan.paxPerMejaMaks} pax).${pax > 10 ? ' Grup cukup besar, mohon cek susunan meja.' : ''}`;
   await kirimKeSemuaKasir(konteks, [
-    `📅 BOOKING #${id} | ${NAMA_JENIS_BOOKING[jenis]}`,
+    `📅 RESERVASI #${id} | ${NAMA_JENIS_BOOKING[jenis]}`,
     `Nama: ${nama} (WA ${konteks.jid.split('@')[0]})`,
-    `Tanggal: ${args.tanggal} jam ${jam} | ${args.jumlah_orang} orang`,
-    rokok ? `Area: ${rokok === 'SMOKING' ? 'smoking' : 'non smoking'}` : null,
+    `Tanggal: ${args.tanggal} jam ${jam} | ${pax} pax`,
+    `Area: ${rokok === 'SMOKING' ? 'smoking' : 'non smoking'}`,
     args.catatan ? `Catatan: ${args.catatan}` : null,
-    jenis === 'RUANG_VIP' ? `Ketentuan: min spend ${rp(v.minimum_spend)}, DP ${rp(v.deposit)} di awal.` : 'Syarat full booking dibahas langsung dengan customer.',
+    ketentuan,
     '',
-    `Balas: "booking ${id} diterima" atau "booking ${id} ditolak <alasan>"`,
+    `Cek ketersediaan, lalu balas: "booking ${id} diterima" atau "booking ${id} ditolak <alasan>"`,
   ].filter(Boolean).join('\n'));
 
   return {
     sukses: true,
     nomor_booking: id,
-    catatan_untuk_ai: `Booking #${id} sudah diteruskan ke tim dan MENUNGGU konfirmasi (ketersediaan dicek manusia, jangan menjanjikan pasti). ${jenis === 'RUANG_VIP' ? `Kalau diterima, deposit ${rp(v.deposit)} wajib dibayar di awal (QR dikirim tim).` : 'Tim akan menghubungi untuk syarat dan detailnya.'} Rangkum singkat data booking (tanggal, jam, jumlah orang) dalam 1-2 kalimat.`,
+    jenis: NAMA_JENIS_BOOKING[jenis],
+    catatan_untuk_ai: `Reservasi #${id} (${NAMA_JENIS_BOOKING[jenis].toLowerCase()}, ${pax} pax) sudah diteruskan ke tim dan MENUNGGU konfirmasi (ketersediaan dicek manusia, jangan menjanjikan pasti). ${jenis === 'CABLAKA' ? `Kalau diterima, DP ${rp(v.deposit)} ditransfer ke rekening yang akan dikirim setelah diterima.` : 'Tanpa DP, tidak perlu bayar apa pun.'} Rangkum singkat data reservasi (tanggal, jam, jumlah pax, smoking/non smoking) dalam 1-2 kalimat dan sebut kata "pax".${jenis === 'CABLAKA' ? ' WAJIB sebut juga: kalau diterima, detail rekening DP dikirim di chat ini.' : ''} JANGAN menyebut QR.`,
   };
 }
 
@@ -3892,38 +3921,37 @@ async function eksekusiKonfirmasiBooking({ nomor_booking, aksi, alasan }, kontek
   if (b.status !== 'MENUNGGU_KONFIRMASI') return { sukses: false, pesan: `Booking #${b.id} statusnya ${b.status}, bukan menunggu konfirmasi.` };
   const c = db.getCustomer(b.customer_jid);
   const sapa = sebutCustomer(c, b.customer_jid);
-  const ringkas = `${NAMA_JENIS_BOOKING[b.jenis]} tanggal ${b.tanggal} jam ${b.jam} untuk ${b.jumlah_orang} orang`;
+  const ringkas = `${(NAMA_JENIS_BOOKING[b.jenis] || b.jenis).toLowerCase()} hari ${tanggalIndo(b.tanggal)} jam ${b.jam} untuk ${b.jumlah_orang} pax`;
 
   if (aksi === 'tolak') {
     db.setStatusBooking(b.id, 'DITOLAK');
-    const pesan = `Maaf ${sapa}, booking ${ringkas} belum bisa kami terima${alasan ? `: ${alasan}` : ''}. Boleh pilih tanggal atau jam lain? 🙏`;
+    const pesan = `Maaf ${sapa}, reservasi ${ringkas} belum bisa kami terima${alasan ? `: ${alasan}` : ''}. Boleh pilih tanggal atau jam lain? 🙏`;
     await konteks.kirimPesan(b.customer_jid, pesan);
     db.simpanChatHistory(b.customer_jid, 'assistant', pesan);
     return { sukses: true, nomor_booking: b.id, status: 'ditolak', customer_dikabari: true };
   }
 
-  const deposit = b.jenis === 'RUANG_VIP' ? Number(config.info().ruang_vip?.deposit || 0) : 0;
+  // Cablaka: terima -> detail rekening DP dikirim ke customer (transfer, tanpa QR). Booking meja: langsung terkonfirmasi, tanpa DP.
+  const deposit = jenisButuhDp(b.jenis) ? Number(config.info().ruang_vip?.deposit || 0) : 0;
   if (deposit > 0) {
     db.setStatusBooking(b.id, 'MENUNGGU_DEPOSIT');
-    const permintaan = db.buatPermintaanQr({
-      jenis: 'DEPOSIT', refIds: [b.id], customerJid: b.customer_jid,
-      label: `deposit booking #${b.id}`, nominal: deposit,
-    });
-    await kirimTiketPermintaanQr(konteks, permintaan, [
-      `💳 MINTA QR DEPOSIT | Booking #${b.id} | ${sapa} | ${ringkas}`,
-      `Deposit: ${rp(deposit)} (wajib dibayar di awal)`,
-      '',
-      `Buat QRIS ${rp(deposit)} di POS, foto QR-nya, lalu kirim ke chat ini sebagai REPLY pesan ini (atau tulis "booking ${b.id}" di caption).`,
-      `Kalau sudah masuk, bilang: "deposit booking ${b.id} sudah masuk"`,
-    ].join('\n'));
-    const pesan = `Kabar baik ${sapa}, booking ${ringkas} diterima 🎉 Untuk mengunci, DP ${rp(deposit)} dibayar di awal (dihitung sebagai bagian dari minimum spend). QR-nya lagi disiapkan kasir, sebentar ya.${alasan ? `\nCatatan tim: ${alasan}` : ''}`;
+    const pesan = [
+      `Kabar baik ${sapa}, reservasi ${ringkas} diterima 🎉`,
+      `Untuk mengunci, DP dibayar di awal (dihitung sebagai bagian dari minimum spend). ${config.teksRekeningDp(deposit)}`,
+      `Setelah transfer, kirim bukti transfernya ke chat ini ya.${alasan ? `\nCatatan tim: ${alasan}` : ''}`,
+    ].join('\n');
     await konteks.kirimPesan(b.customer_jid, pesan);
     db.simpanChatHistory(b.customer_jid, 'assistant', pesan);
-    return { sukses: true, nomor_booking: b.id, status: 'diterima, menunggu deposit', customer_dikabari: true };
+    await kirimKeSemuaKasir(konteks, [
+      `💳 MENUNGGU DP | Booking #${b.id} | ${sapa} | ${ringkas}`,
+      `Rekening DP ${rp(deposit)} sudah dikirim ke customer. Cek mutasi rekening.`,
+      `Kalau sudah masuk, bilang: "deposit booking ${b.id} sudah masuk"`,
+    ].join('\n'));
+    return { sukses: true, nomor_booking: b.id, status: 'diterima, menunggu DP transfer', customer_dikabari: true };
   }
 
   db.setStatusBooking(b.id, 'DIKONFIRMASI');
-  const pesan = `Kabar baik ${sapa}, booking ${ringkas} dikonfirmasi 🎉${alasan ? ` ${alasan}` : ' Tim kami akan menghubungi untuk detail selanjutnya.'}`;
+  const pesan = `Kabar baik ${sapa}, reservasi ${ringkas} dikonfirmasi 🎉 Tanpa DP, tinggal datang sesuai jadwal.${alasan ? ` ${alasan}` : ''}`;
   await konteks.kirimPesan(b.customer_jid, pesan);
   db.simpanChatHistory(b.customer_jid, 'assistant', pesan);
   return { sukses: true, nomor_booking: b.id, status: 'dikonfirmasi', customer_dikabari: true };
@@ -3932,13 +3960,11 @@ async function eksekusiKonfirmasiBooking({ nomor_booking, aksi, alasan }, kontek
 async function eksekusiKonfirmasiDepositBooking({ nomor_booking }, konteks) {
   const b = db.getBooking(nomor_booking);
   if (!b) return { sukses: false, pesan: `Booking #${nomor_booking} tidak ditemukan.` };
-  if (b.status !== 'MENUNGGU_DEPOSIT') return { sukses: false, pesan: `Booking #${b.id} statusnya ${b.status}, bukan menunggu deposit.` };
+  if (b.status !== 'MENUNGGU_DEPOSIT') return { sukses: false, pesan: `Booking #${b.id} statusnya ${b.status}, bukan menunggu DP.` };
   const deposit = Number(config.info().ruang_vip?.deposit || 0);
   db.setStatusBooking(b.id, 'DIKONFIRMASI', deposit);
-  const perm = db.getPermintaanQrByRef('DEPOSIT', b.id);
-  if (perm) db.setPermintaanQrLunas(perm.id);
   const sapa = sebutCustomer(db.getCustomer(b.customer_jid), b.customer_jid);
-  const pesan = `Makasih ${sapa}, DP ${rp(deposit)} udah masuk. Booking ${NAMA_JENIS_BOOKING[b.jenis]} tanggal ${b.tanggal} jam ${b.jam} resmi terkunci ✅ Sampai ketemu!`;
+  const pesan = `Makasih ${sapa}, DP ${rp(deposit)} udah masuk. Reservasi ${(NAMA_JENIS_BOOKING[b.jenis] || b.jenis).toLowerCase()} hari ${tanggalIndo(b.tanggal)} jam ${b.jam} resmi terkunci ✅ Sampai ketemu!`;
   await konteks.kirimPesan(b.customer_jid, pesan);
   db.simpanChatHistory(b.customer_jid, 'assistant', pesan);
   return { sukses: true, nomor_booking: b.id, deposit, customer_dikabari: true };

@@ -57,7 +57,7 @@ async function cekTimeoutKeputusanHabis() {
   }
 }
 
-// Pre-order lunas yang jam datangnya tinggal <= 30 menit dan customer belum sampai: tanya apakah tetap datang.
+// Pre-order yang jam datangnya tinggal <= 30 menit dan customer belum sampai: tanya apakah tetap datang.
 // Jawaban customer ditangani agent lewat tool jadwal_kedatangan (ya -> mulai masak, tidak -> batal, ubah jam).
 async function cekJadwalPreOrder() {
   if (!sock?.user) return;
@@ -304,18 +304,17 @@ async function handlePesanNonTeks(jid, jenisMedia) {
     return;
   }
 
-  const pesanan = db.getDraftAtauMenungguBayarByCustomer(jid);
   const customer = db.getCustomer(jid);
   let balasan;
 
-  if (pesanan && pesanan.status === 'MENUNGGU_BAYAR') {
-    // Kemungkinan bukti transfer: teruskan info ke semua kasir (kasir yang memastikan di EDC/mutasi)
-    const infoMeja = customer.nomor_meja ? ` (meja ${customer.nomor_meja})` : '';
+  const menungguDp = db.getBookingAktifByCustomer(jid).find((b) => b.status === 'MENUNGGU_DEPOSIT');
+  if (menungguDp) {
+    // Kemungkinan bukti transfer DP Cablaka: teruskan info ke semua kasir (kasir yang memastikan di mutasi rekening)
     await agent.kirimKeSemuaKasir(
       { kirimPesan },
-      `ℹ️ ${customer.nama || jid.split('@')[0]}${infoMeja} mengirim ${jenisMedia}, kemungkinan bukti transfer untuk pesanan ${nomorPesanan(pesanan)}. Mohon dicek manual nggih.`
+      `ℹ️ ${customer.nama || jid.split('@')[0]} (WA ${jid.split('@')[0]}) mengirim ${jenisMedia}, kemungkinan bukti transfer DP booking #${menungguDp.id}. Mohon cek mutasi rekening nggih, kalau sudah masuk balas: "deposit booking ${menungguDp.id} sudah masuk"`
     );
-    balasan = 'Makasih Mas/Mbak, aku teruskan ke kasir buat dicek ya. Pesanan langsung jalan begitu pembayarannya terkonfirmasi 🙏';
+    balasan = 'Makasih, bukti transfernya aku teruskan ke tim buat dicek ya 🙏';
   } else {
     balasan = 'Maaf ya Mas/Mbak, aku baru bisa baca pesan teks. Boleh ditulis aja pesannya?';
   }
@@ -737,6 +736,8 @@ setInterval(() => {
   cekPengingatQr().catch((err) => console.error('❌ Error cek pengingat QR:', err.message));
   cekTimeoutMeja().catch((err) => console.error('❌ Error cek timeout meja:', err.message));
 }, 60 * 1000);
+
+config.cekEnvReservasi();
 
 if (!db.getInfoResto('aturan_layanan')) {
   console.log('⚠️  info_resto kosong. Jalankan "node seed.js" supaya aturan layanan dan catatan alergen masuk ke prompt.');
