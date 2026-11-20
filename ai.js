@@ -325,7 +325,7 @@ function normalisasiTipe(t) {
 async function prosesOrderCustomer(pesanCustomer) {
   const itemMentah = await ekstrakOrderCustomer(pesanCustomer);
 
-  const hasil = { items: [], tidakDikenali: [], perluKlarifikasi: [], perluPilihan: [] };
+  const hasil = { items: [], tidakDikenali: [], perluKlarifikasi: [], perluPilihan: [], peringatanSuhu: [] };
 
   for (const item of itemMentah) {
     if (!item.nama) continue;
@@ -371,6 +371,13 @@ async function prosesOrderCustomer(pesanCustomer) {
     if (!menuFinal) {
       hasil.tidakDikenali.push(item.nama);
       continue;
+    }
+
+    // Customer minta suhu yang tidak tersedia untuk menu itu (misal "es teh poci" padahal hanya panas): dicatat,
+    // item tetap masuk apa adanya dan customer diberi tahu supaya bisa memilih tetap atau ganti.
+    if (item.suhu && Array.isArray(menuFinal.suhu) && menuFinal.suhu.length > 0
+      && !menuFinal.suhu.map((x) => String(x).toLowerCase()).includes(String(item.suhu).toLowerCase())) {
+      hasil.peringatanSuhu.push({ menu: menuFinal.nama, diminta: item.suhu, tersedia: menuFinal.suhu });
     }
 
     // ---------- RESOLVE VARIAN ----------
