@@ -50,12 +50,12 @@
     }
   ],
   "ruang_vip": {
-    "nama": "Ruang Meeting Cablaka (VIP)",
-    "kapasitas": "25-30 orang",
+    "nama": "Ruang Meeting Cablaka (lantai 2)",
+    "kapasitas": "maksimal 30 pax (tidak ada minimum pax)",
     "gratis_jam": 3,
     "minimum_spend": 2000000,
     "deposit": 400000,
-    "deposit_catatan": "DP Rp400.000 wajib dibayar di awal untuk mengunci booking, dan dihitung sebagai bagian dari minimum spend Rp2.000.000.",
+    "deposit_catatan": "DP Rp400.000 wajib ditransfer ke rekening restoran untuk mengunci booking (nomor rekening dikirim Cimendo setelah reservasi diterima), dan dihitung sebagai bagian dari minimum spend Rp2.000.000.",
     "fasilitas": [
       "LCD TV",
       "Sound system",
@@ -64,9 +64,11 @@
       "WiFi area"
     ]
   },
-  "full_booking": {
-    "kapasitas": 80,
-    "syarat": "DUMMY: syarat dan minimum spend booking seluruh resto menyusul dari pemilik. Untuk sekarang pengajuan diteruskan ke tim dan dibahas langsung."
+  "reservasi": {
+    "maks_pax_cablaka": 30,
+    "pax_per_meja_min": 4,
+    "pax_per_meja_maks": 5,
+    "catatan": "Booking meja: tanpa DP, 1 meja 4-5 pax. Ruang Meeting Cablaka: tidak ada minimum pax, maksimal 30 pax, wajib DP via transfer. Lebih dari 30 pax (termasuk full booking resto) tidak diproses Cimendo: diarahkan ke nomor official restoran (RESTO_NOMOR_OFFICIAL di .env), manager yang menangani. Rekening DP dari .env (BOOKING_DP_BANK, BOOKING_DP_REKENING, BOOKING_DP_ATAS_NAMA)."
   },
   "nasi": {
     "id_menu": "nasi_putih",

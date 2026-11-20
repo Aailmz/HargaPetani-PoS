@@ -1,5 +1,6 @@
 // Konfigurasi bisnis yang dibaca dari data_menu/info_resto.json (bisa diedit pemilik, tanpa restart):
-// pajak, jam operasional + last order, info resto lengkap, live music, ruang VIP, menu margin.
+// pajak, jam operasional + last order, info resto lengkap, live music, Ruang Meeting Cablaka, aturan reservasi, menu margin.
+// Nomor official restoran dan rekening DP dibaca dari .env (RESTO_NOMOR_OFFICIAL, BOOKING_DP_BANK, BOOKING_DP_REKENING, BOOKING_DP_ATAS_NAMA).
 const fs = require('fs');
 const path = require('path');
 const { ZONA_BOT, parseJam, formatJam, rp } = require('./format');
@@ -119,6 +120,65 @@ function teksLiveMusic() {
   return lm.map((l) => `${l.label}: ${fmtJam(l.mulai)}-${fmtJam(l.selesai)}`).join('\n');
 }
 
+// ---------- RESERVASI ----------
+// Customer memilih tempat (dibantu Cimendo lewat percakapan, bukan aturan kaku):
+//   MEJA    -> booking meja lewat Cimendo, tanpa DP (1 meja = 4-5 pax)
+//   CABLAKA -> Ruang Meeting Cablaka lantai 2, TIDAK ada minimum pax, maksimal 30 pax, wajib DP via transfer rekening
+//   > 30 pax -> tidak diproses Cimendo; diarahkan ke nomor official restoran (manager yang menangani)
+function aturanReservasi() {
+  const r = info().reservasi || {};
+  return {
+    maksCablaka: Number(r.maks_pax_cablaka ?? 30),
+    paxPerMejaMin: Number(r.pax_per_meja_min ?? 4),
+    paxPerMejaMaks: Number(r.pax_per_meja_maks ?? 5),
+  };
+}
+
+// jenisPilihan: 'meja' | 'cablaka' | undefined. Hasil: 'HANDOFF' (> 30 pax), 'MEJA', 'CABLAKA', atau null (belum dipilih).
+function jenisReservasi(pax, jenisPilihan) {
+  if (Number(pax) > aturanReservasi().maksCablaka) return 'HANDOFF';
+  if (jenisPilihan === 'cablaka') return 'CABLAKA';
+  if (jenisPilihan === 'meja') return 'MEJA';
+  return null;
+}
+
+// Estimasi jumlah meja yang dibutuhkan: pax / 5 (longgar) sampai pax / 4 (rapat)
+function estimasiMeja(pax) {
+  const a = aturanReservasi();
+  const n = Number(pax) || 0;
+  return { min: Math.ceil(n / a.paxPerMejaMaks), maks: Math.ceil(n / a.paxPerMejaMin) };
+}
+
+// Nomor official restoran (untuk reservasi > 30 pax) dan rekening DP Cablaka dibaca dari .env.
+// Nilai bawaan di bawah DUMMY: ganti lewat .env sebelum dipakai customer sungguhan.
+const DUMMY_OFFICIAL = '08xx-xxxx-xxxx (DUMMY, isi RESTO_NOMOR_OFFICIAL di .env)';
+function nomorOfficial() {
+  return process.env.RESTO_NOMOR_OFFICIAL || DUMMY_OFFICIAL;
+}
+
+function rekeningDp() {
+  return {
+    bank: process.env.BOOKING_DP_BANK || 'Mandiri',
+    nomor: process.env.BOOKING_DP_REKENING || '0000000000 (DUMMY, isi BOOKING_DP_REKENING di .env)',
+    atasNama: process.env.BOOKING_DP_ATAS_NAMA || 'DUMMY (isi BOOKING_DP_ATAS_NAMA di .env)',
+  };
+}
+
+// Peringatan sekali di log kalau nilai ENV masih kosong/dummy, supaya tidak terlewat sebelum produksi.
+function cekEnvReservasi() {
+  const kurang = ['RESTO_NOMOR_OFFICIAL', 'BOOKING_DP_REKENING', 'BOOKING_DP_ATAS_NAMA'].filter((k) => !process.env[k]);
+  if (kurang.length) console.warn(`⚠️  .env belum diisi: ${kurang.join(', ')} (reservasi memakai nilai DUMMY).`);
+}
+
+function teksRekeningDp(nominal) {
+  const r = rekeningDp();
+  return [
+    `DP ${rp(nominal)} ditransfer ke:`,
+    `${r.bank} ${r.nomor}`,
+    `a.n. ${r.atasNama}`,
+  ].join('\n');
+}
+
 // ---------- INFO LENGKAP (dikirim apa adanya ke customer) ----------
 function teksRuangVip() {
   const v = info().ruang_vip;
@@ -127,20 +187,33 @@ function teksRuangVip() {
     `${v.nama}`,
     `Kapasitas ${v.kapasitas}.`,
     `Gratis pemakaian ${v.gratis_jam} jam dengan minimum order ${rp(v.minimum_spend)}.`,
-    v.deposit_catatan || `DP ${rp(v.deposit)} dibayar di awal.`,
+    v.deposit_catatan || `DP ${rp(v.deposit)} ditransfer ke rekening restoran.`,
     'Fasilitas:',
     ...(v.fasilitas || []).map((f, i) => `${i + 1}. ${f}`),
   ].join('\n');
 }
 
+function teksReservasi() {
+  const a = aturanReservasi();
+  const v = info().ruang_vip || {};
+  return [
+    'Reservasi bisa lewat Cimendo, ada dua pilihan tempat:',
+    `1. Booking meja (1 meja muat ${a.paxPerMejaMin}-${a.paxPerMejaMaks} pax), tanpa DP.`,
+    `2. Ruang Meeting Cablaka (lantai 2), tidak ada minimum pax, maksimal ${a.maksCablaka} pax. Pakai DP ${rp(v.deposit ?? 400000)} lewat transfer rekening.`,
+    `Lebih dari ${a.maksCablaka} pax ditangani manager, hubungi nomor official restoran ${nomorOfficial()}.`,
+    'Cukup sebutkan tanggal, jam, jumlah pax, dan area smoking atau non smoking.',
+  ].join('\n');
+}
+
+// Reservasi > 30 pax (termasuk booking seluruh resto): Cimendo tidak memproses, diarahkan ke nomor official.
 function teksFullBooking() {
-  const f = info().full_booking;
-  const kap = f?.kapasitas || info().kapasitas_seat;
-  return `Booking seluruh resto (kapasitas ${kap} seat) bisa diajukan lewat sini, nanti dikonfirmasi tim ya. Syarat dan minimum spend dibahas langsung oleh tim kami.`;
+  const a = aturanReservasi();
+  return `Untuk reservasi lebih dari ${a.maksCablaka} pax (termasuk booking seluruh resto), Cablaka maksimal ${a.maksCablaka} pax jadi ditangani langsung oleh manager. Boleh hubungi nomor official restoran: ${nomorOfficial()}.`;
 }
 
 function teksInfoLengkap() {
   const i = info();
+  const a = aturanReservasi();
   const bagian = [
     `${i.nama_resto}`,
     `Alamat: ${i.alamat}`,
@@ -150,15 +223,17 @@ function teksInfoLengkap() {
     teksJamOperasional(),
     'Harga menu belum termasuk PPN 10%, tanpa service charge.',
     '',
-    `Kapasitas ${i.kapasitas_seat} seat, bisa booking seluruh resto.`,
+    `Kapasitas ${i.kapasitas_seat} seat (1 meja ${a.paxPerMejaMin}-${a.paxPerMejaMaks} pax).`,
     '',
     'Live music:',
     teksLiveMusic(),
     '',
-    'Ruang VIP:',
+    'Ruang Meeting Cablaka:',
     teksRuangVip(),
     '',
-    'Pembayaran: bayar dulu lewat QRIS (default), atau open bill kalau makan di tempat dan mau bayar belakangan.',
+    teksReservasi(),
+    '',
+    'Pembayaran: waiter yang datang ke meja untuk menagih, bayar di depan atau di belakang sesuai pilihan kamu.',
   ];
   return bagian.join('\n');
 }
@@ -168,6 +243,7 @@ const menuMargin = () => info().menu_margin || [];
 
 module.exports = {
   jalurData, info, kuis, ppnPersen, hitungTagihan, denganPpn,
-  statusBuka, teksJamOperasional, teksLiveMusic, teksRuangVip, teksFullBooking, teksInfoLengkap,
+  statusBuka, teksJamOperasional, teksLiveMusic, teksRuangVip, teksFullBooking, teksInfoLengkap, teksReservasi,
+  aturanReservasi, jenisReservasi, estimasiMeja, nomorOfficial, rekeningDp, teksRekeningDp, cekEnvReservasi,
   namaAi, menuMargin, NAMA_HARI, fmtJam, menitDariJam, formatJam,
 };
