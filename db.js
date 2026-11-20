@@ -193,9 +193,10 @@ tambahKolomJikaBelum('pesanan_item', 'tipe', "TEXT DEFAULT 'DINE_IN'"); // 'DINE
 // [Pajak] harga menu BELUM termasuk PPN: subtotal = jumlah harga menu, grand_total = subtotal + PPN
 tambahKolomJikaBelum('pesanan', 'ppn', 'INTEGER');
 tambahKolomJikaBelum('pesanan', 'grand_total', 'INTEGER');
-// [Bayar] 'BAYAR_DULU' (default) | 'OPEN_BILL'. Status OPEN_BILL = sudah di dapur, bayar belakangan.
+// [Bayar] Pembayaran selalu ditagih waiter di meja (tanpa QRIS). metode_bayar: 'BAYAR_DEPAN' | 'BAYAR_BELAKANG'
+// (data lama: 'BAYAR_DULU' | 'OPEN_BILL'). Status OPEN_BILL = sudah di dapur, belum dibayar; jadi SELESAI saat kasir konfirmasi lunas.
 tambahKolomJikaBelum('pesanan', 'metode_bayar', "TEXT DEFAULT 'BAYAR_DULU'");
-tambahKolomJikaBelum('customers', 'cara_bayar', 'TEXT');           // NULL/'BAYAR_DULU' | 'OPEN_BILL' (diminta customer)
+tambahKolomJikaBelum('customers', 'cara_bayar', 'TEXT');           // NULL | 'BAYAR_DEPAN' | 'BAYAR_BELAKANG' (pilihan customer)
 tambahKolomJikaBelum('customers', 'layanan_ditanya', 'INTEGER DEFAULT 0'); // 1 = dine in/take away sudah dijawab di kunjungan ini
 
 // [QR dinamis] Permintaan QR ke kasir. Kasir membuat QRIS di POS, memfoto, lalu mengirim fotonya ke bot.
@@ -243,12 +244,12 @@ db.exec(`
   )
 `);
 
-// [Booking] Ruang VIP / seluruh resto
+// [Booking] Booking meja / Ruang Meeting Cablaka
 db.exec(`
   CREATE TABLE IF NOT EXISTS booking (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     customer_jid TEXT NOT NULL,
-    jenis TEXT NOT NULL,              -- 'RUANG_VIP' | 'FULL_RESTO'
+    jenis TEXT NOT NULL,              -- 'MEJA' (1-10 pax) | 'CABLAKA' (11-30 pax); data lama: 'RUANG_VIP' | 'FULL_RESTO'
     tanggal TEXT NOT NULL,
     jam TEXT NOT NULL,
     jumlah_orang INTEGER,
@@ -730,24 +731,24 @@ function setJadwalPesanan(id, { jamDatang, jadwalStatus }) {
   if (jadwalStatus !== undefined) db.prepare('UPDATE pesanan SET jadwal_status = ? WHERE id = ?').run(jadwalStatus, id);
 }
 
-// Pre-order yang sudah lunas dan masih punya jadwal berjalan, milik 1 customer (hari ini)
+// Pre-order yang sudah diteruskan (belum dibayar = OPEN_BILL, atau sudah lunas = SELESAI) dan masih punya jadwal berjalan, milik 1 customer (hari ini)
 function getPreOrderAktifByCustomer(customerJid) {
   return db.prepare(`
     SELECT * FROM pesanan
-    WHERE customer_jid = ? AND status = 'SELESAI' AND tanggal = ?
+    WHERE customer_jid = ? AND status IN ('SELESAI', 'OPEN_BILL') AND tanggal = ?
       AND jadwal_status IN ('MENUNGGU', 'DITANYA', 'DIKONFIRMASI')
     ORDER BY no_harian
   `).all(customerJid, tanggalBot());
 }
 
-// Pre-order lunas yang sudah masuk jendela "30 menit sebelum datang" tapi belum ditanya,
+// Pre-order (diteruskan, belum dimasak) yang sudah masuk jendela "30 menit sebelum datang" tapi belum ditanya,
 // dan customer-nya belum sampai di resto.
 function getPreOrderPerluDitanya(menitSebelum = 30) {
   const sekarang = menitSekarangBot();
   return db.prepare(`
     SELECT p.*, c.nama, c.sapaan, c.status_kedatangan FROM pesanan p
     JOIN customers c ON c.jid = p.customer_jid
-    WHERE p.status = 'SELESAI' AND p.jadwal_status = 'MENUNGGU' AND p.tanggal = ?
+    WHERE p.status IN ('SELESAI', 'OPEN_BILL') AND p.jadwal_status = 'MENUNGGU' AND p.tanggal = ?
       AND c.status_kedatangan != 'DI_RESTO'
   `).all(tanggalBot()).filter((p) => {
     const jam = parseJam(p.jam_datang);
@@ -1072,12 +1073,12 @@ function getPesananMenungguBayar() {
   `).all();
 }
 
-// Pesanan yang sudah lunas hari ini (zona bot): dipakai kasir untuk lapor menu habis setelah bayar
+// Pesanan yang sudah diteruskan ke dapur hari ini (zona bot), lunas (SELESAI) maupun belum dibayar (OPEN_BILL): dipakai kasir untuk lapor menu habis
 function getPesananLunasHariIni() {
   return db.prepare(`
     SELECT p.*, c.nama, c.nomor_meja AS nomor_meja_customer FROM pesanan p
     JOIN customers c ON c.jid = p.customer_jid
-    WHERE p.status = 'SELESAI' AND p.tanggal = ?
+    WHERE p.status IN ('SELESAI', 'OPEN_BILL') AND p.tanggal = ?
     ORDER BY p.no_harian
   `).all(tanggalBot());
 }
